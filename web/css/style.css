@@ -513,5 +513,82 @@ textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent
 .badge-running { background: rgba(56,189,248,0.3); color: #ffffff; border: 1.5px solid var(--accent); }
 .badge-offline { background: rgba(244,63,94,0.25); color: var(--rose); border: 1px solid var(--rose); }
 
+/* CBO Query Plan & EXPLAIN DAG Visualizer */
+.cbo-plan-wrapper {
+  margin: 10px 0 16px 0;
+  border: 1.5px solid #2563eb;
+  background: #090e1c;
+  border-radius: 8px;
+  overflow: hidden;
+}
+.cbo-plan-toggle {
+  background: #172554;
+  padding: 8px 14px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  cursor: pointer;
+  user-select: none;
+  font-family: monospace;
+  font-size: 12px;
+  font-weight: 800;
+  color: #93c5fd;
+}
+.cbo-plan-toggle:hover { background: #1e3a8a; }
+.cbo-plan-content {
+  padding: 12px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  background: #070a14;
+}
+.cbo-metrics-strip {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  font-family: monospace;
+  font-size: 11.5px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid #1e293b;
+}
+.cbo-metric-tag {
+  background: #0f172a;
+  border: 1px solid #334155;
+  padding: 3px 8px;
+  border-radius: 4px;
+  color: #ffffff;
+}
+.cbo-dag-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.cbo-dag-node {
+  background: #0b1222;
+  border: 1px solid #1e293b;
+  border-radius: 6px;
+  padding: 6px 10px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 12px;
+  font-family: monospace;
+}
+.cbo-dag-node.highlight {
+  border-color: var(--accent);
+}
+.cbo-op-tag {
+  font-weight: 800;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 10.5px;
+}
+.op-index { background: rgba(56,189,248,0.2); color: var(--accent); border: 1px solid var(--accent); }
+.op-doc { background: rgba(192,132,252,0.2); color: var(--purple); border: 1px solid var(--purple); }
+.op-draft { background: rgba(251,146,60,0.2); color: var(--orange); border: 1px solid var(--orange); }
+.op-verify { background: rgba(74,222,128,0.2); color: var(--green); border: 1px solid var(--green); }
+.op-audit { background: rgba(244,63,94,0.2); color: var(--rose); border: 1px solid var(--rose); }
+.op-synth { background: rgba(234,179,8,0.2); color: #facc15; border: 1px solid #facc15; }
+
 .spinner { border: 3px solid rgba(255,255,255,0.15); border-top: 3px solid #ffffff; border-radius: 50%; width: 14px; height: 14px; animation: spin 0.8s linear infinite; display: inline-block; }
 @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }

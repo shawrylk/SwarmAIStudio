@@ -31,7 +31,8 @@ from swarm.git_engine import (
     apply_stash,
     drop_stash,
     stash_and_switch_branch,
-    run_git
+    run_git,
+    extract_deep_repo_context
 )
 from swarm.sessions import (
     list_sessions,
@@ -56,6 +57,7 @@ from swarm.loop_engine import (
     ping_lead_advisor
 )
 from swarm.context7_engine import query_context7_library, query_context7_docs, fetch_latest_doc_context
+from swarm.planner_cbo import optimize_and_select_best_plan, execute_plan_dag
 
 MODEL_ASSIGNMENTS = load_model_assignments()
 
@@ -208,8 +210,21 @@ class SwarmHandler(BaseHTTPRequestHandler):
         except Exception:
             payload = {}
 
-        # 1. Context7 Live Documentation Query
-        if parsed.path == '/api/context7/query':
+        # 1. Cost-Based Optimizer (CBO) & Explain Plan
+        if parsed.path == '/api/planner/explain':
+            msg = payload.get("message", "")
+            repo_path = payload.get("repo_path", "")
+            ctx = extract_deep_repo_context(repo_path)
+            best_plan, candidates, stats = optimize_and_select_best_plan(msg, ctx)
+            self._send_json({
+                "selected_plan": best_plan.to_dict(),
+                "candidates": [c.to_dict() for c in candidates],
+                "stats": stats,
+                "explain_text": best_plan.generate_explain_plan()
+            })
+
+        # 2. Context7 Live Documentation Query
+        elif parsed.path == '/api/context7/query':
             lib = payload.get("library", "")
             q = payload.get("query", "")
             log_event("info", "context7", f"API Context7 query for '{lib}' ('{q}')")
@@ -222,7 +237,7 @@ class SwarmHandler(BaseHTTPRequestHandler):
             res = query_context7_library(lib, q)
             self._send_json(res)
 
-        # 2. Autonomous Loop Agent Controls
+        # 3. Autonomous Loop Agent Controls
         elif parsed.path == '/api/loop/start':
             goal = payload.get("goal", "")
             repo_path = payload.get("repo_path", "")
@@ -251,7 +266,7 @@ class SwarmHandler(BaseHTTPRequestHandler):
             
             self._send_json({"answer": ans})
 
-        # 3. Chat Execution
+        # 4. Chat Execution with Dynamic CBO Planning
         elif parsed.path == '/api/chat':
             message = payload.get("message", "")
             repo_path = payload.get("repo_path", "")
@@ -265,7 +280,7 @@ class SwarmHandler(BaseHTTPRequestHandler):
             
             self._send_json(result)
 
-        # 4. Multi-Chat Sessions
+        # 5. Multi-Chat Sessions
         elif parsed.path == '/api/sessions/new':
             title = payload.get("title", "New Chat")
             repo_path = payload.get("repo_path", "")
@@ -285,7 +300,7 @@ class SwarmHandler(BaseHTTPRequestHandler):
             rename_session(sess_id, title)
             self._send_json({"status": "renamed"})
 
-        # 5. Git Operations with Comprehensive Debug Logging
+        # 6. Git Operations with Comprehensive Debug Logging
         elif parsed.path == '/api/git/commit':
             repo_path = payload.get("repo_path", "")
             msg = payload.get("message", "Commit via Swarm Web")
@@ -349,7 +364,7 @@ class SwarmHandler(BaseHTTPRequestHandler):
             res = remove_worktree(repo_path, wt_path, force=force)
             self._send_json(res)
 
-        # 6. Stash Endpoints
+        # 7. Stash Endpoints
         elif parsed.path == '/api/git/stash/save':
             repo_path = payload.get("repo_path", "")
             msg = payload.get("message", "")
@@ -382,7 +397,7 @@ class SwarmHandler(BaseHTTPRequestHandler):
             res = stash_and_switch_branch(repo_path, target_branch, create=create)
             self._send_json(res)
 
-        # 7. Model Scouting & Assignment
+        # 8. Model Scouting & Assignment
         elif parsed.path == '/api/models/rescout':
             catalog = scout_all_models(force_refresh=True)
             log_event("info", "model", "Rescouted models for Gemini & Qwen")

@@ -1148,6 +1148,8 @@ async function loadActiveSessionMessages() {
           `;
         }
 
+        const planHtml = turn.plan ? renderCboPlanHtml(turn.plan, msgId) : '';
+
         assistRow.innerHTML = `
           <div class="msg-assistant" id="${msgId}">
             <div class="msg-header">
@@ -1157,6 +1159,7 @@ async function loadActiveSessionMessages() {
             <div class="status-timeline">
               ${(turn.status_steps || []).map(s => `<div>${escapeHtml(s)}</div>`).join('')}
             </div>
+            ${planHtml}
             <div class="markdown-body">
               ${parseMarkdown(turn.answer)}
             </div>
@@ -1682,6 +1685,12 @@ async function submitMessage() {
     const statusEl = document.getElementById(`status-${msgId}`);
     statusEl.innerHTML = (data.status_steps || []).map(s => `<div>${escapeHtml(s)}</div>`).join('');
 
+    if (data.plan) {
+      const planDiv = document.createElement('div');
+      planDiv.innerHTML = renderCboPlanHtml(data.plan, msgId);
+      statusEl.parentNode.insertBefore(planDiv, document.getElementById(`body-${msgId}`));
+    }
+
     const bodyEl = document.getElementById(`body-${msgId}`);
     bodyEl.innerHTML = parseMarkdown(data.answer || "No response received.");
 
@@ -1718,6 +1727,70 @@ async function submitMessage() {
     setPollingSpeed(false);
     updateTelemetryAndTopology();
     container.scrollTop = container.scrollHeight;
+  }
+}
+
+function renderCboPlanHtml(plan, msgId) {
+  if (!plan) return '';
+  const opClassMap = {
+    'INDEX_SCAN': 'op-index',
+    'DOC_FETCH': 'op-doc',
+    'CODE_DRAFT': 'op-draft',
+    'SYNTAX_VERIFY': 'op-verify',
+    'THREAT_AUDIT': 'op-audit',
+    'CONSENSUS_MERGE': 'op-doc',
+    'SYNTHESIZE': 'op-synth'
+  };
+
+  const nodesHtml = (plan.nodes || []).map((n, i) => {
+    const opClass = opClassMap[n.operator] || 'op-index';
+    const depsText = (n.dependencies && n.dependencies.length > 0) ? `↳ Depends on: ${n.dependencies.join(', ')}` : `[Root]`;
+    return `
+      <div class="cbo-dag-node">
+        <div style="display:flex; align-items:center; gap:8px;">
+          <span class="cbo-op-tag ${opClass}">${escapeHtml(n.operator)}</span>
+          <span style="font-weight:700; color:#ffffff;">${escapeHtml(n.name)}</span>
+          <span style="color:var(--text-muted); font-size:11px;">(${escapeHtml(n.assigned_agent)})</span>
+        </div>
+        <div style="display:flex; align-items:center; gap:10px;">
+          <span style="color:#94a3b8; font-size:11px;">${escapeHtml(n.slot)}</span>
+          <span style="color:var(--accent); font-weight:700;">${n.estimated_cost_ms}ms</span>
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  const pId = `cbo-plan-${msgId}`;
+  return `
+    <div class="cbo-plan-wrapper">
+      <div class="cbo-plan-toggle" onclick="toggleCboPlan('${pId}')">
+        <span>⚡ EXPLAIN SWARM QUERY PLAN: ${escapeHtml(plan.strategy_name)}</span>
+        <span>Cost: ${plan.cost_score} · Conf: ${Math.round(plan.confidence_score*100)}% ▾</span>
+      </div>
+      <div class="cbo-plan-content" id="${pId}" style="display:block;">
+        <div class="cbo-metrics-strip">
+          <div class="cbo-metric-tag">Cost Score: <b>${plan.cost_score}</b></div>
+          <div class="cbo-metric-tag">Confidence: <b>${Math.round(plan.confidence_score*100)}%</b></div>
+          <div class="cbo-metric-tag">Parallel Width: <b>${plan.parallelism_width}x</b></div>
+          <div class="cbo-metric-tag">Critical Path: <b>${Math.round(plan.critical_path_cost_ms)}ms</b></div>
+          <div class="cbo-metric-tag">Est. Tokens: <b>${plan.total_estimated_tokens}</b></div>
+        </div>
+        <div style="font-size:12px; color:#cbd5e1; font-style:italic;">
+          Rationale: ${escapeHtml(plan.strategy_rationale || '')}
+        </div>
+        <div class="cbo-dag-list">
+          <div style="font-weight:800; color:#93c5fd; font-size:11px; margin-bottom:2px;">OPTIMIZED EXECUTION DAG:</div>
+          ${nodesHtml}
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function toggleCboPlan(pId) {
+  const el = document.getElementById(pId);
+  if (el) {
+    el.style.display = (el.style.display === 'none') ? 'block' : 'none';
   }
 }
 

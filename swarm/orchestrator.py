@@ -1,6 +1,7 @@
 """
 Task-Aware Dynamic Swarm Planner & Orchestrator Engine
 Dynamically scales 1 to 8 GPU slots with specialized skills based on task intent.
+Includes Cost-Based Optimizer (CBO) & SQL-Style Query DAG Planning.
 Includes Context7 Live Documentation & API Scout for 100% up-to-date knowledge.
 Synthesizes findings via Gemini Lead Advisor and persists Artifacts.
 """
@@ -16,6 +17,7 @@ from swarm.git_engine import extract_deep_repo_context, format_repo_prompt_block
 from swarm.artifacts import save_artifact_to_disk
 from swarm.sessions import save_session_turn
 from swarm.context7_engine import fetch_latest_doc_context, query_context7_library
+from swarm.planner_cbo import optimize_and_select_best_plan
 
 MODEL_ASSIGNMENTS = load_model_assignments()
 
@@ -484,14 +486,20 @@ async def process_advisor_chat(message: str, repo_path: str = "", session_id: st
     if ctx:
         status_steps.append(f"📁 Loaded context for '{ctx.get('name')}' (Branch: {ctx.get('branch')})")
 
-    # 2. Task-Aware Dynamic Swarm Planning (1 to 8 GPU Slots)
+    # 2. Cost-Based Optimizer (CBO) & Execution Plan Selection
+    optimal_plan, candidates, stats = optimize_and_select_best_plan(message, ctx)
+    status_steps.append(
+        f"⚡ Cost-Based Optimizer (CBO): Selected '{optimal_plan.strategy_name}' (Cost: {optimal_plan.cost_score} · Confidence: {int(optimal_plan.confidence_score*100)}% · Parallel: {optimal_plan.parallelism_width}x)"
+    )
+
+    # 3. Task-Aware Dynamic Swarm Planning (1 to 8 GPU Slots)
     planned_subagents = plan_dynamic_swarm_for_task(message, has_repo=bool(ctx))
     set_dynamic_subagents_roster(planned_subagents)
     
     agent_names_str = ", ".join([a["name"] for a in planned_subagents])
     status_steps.append(f"🚀 Task Planner: Scaled swarm to {len(planned_subagents)} dynamic specialist slots ({agent_names_str})...")
 
-    # 3. Dynamic Parallel Swarm Execution + Qwen 3.8 Oracle
+    # 4. Dynamic Parallel Swarm Execution + Qwen 3.8 Oracle
     route = route_request(message, has_repo=bool(ctx))
     update_agent_status("consensus_nodes", "lfm", "running", f"⚡ Hosting {len(planned_subagents)} concurrent GPU swarm slots...")
     
@@ -512,7 +520,7 @@ async def process_advisor_chat(message: str, repo_path: str = "", session_id: st
     update_agent_status("consensus_nodes", "lfm", "online", "Port 8034 (8 continuous slots)")
     status_steps.append(f"✓ {len(planned_subagents)} specialist sub-agents completed in parallel on GPU.")
 
-    # 4. Lead Advisor Synthesis
+    # 5. Lead Advisor Synthesis
     update_agent_status("orchestrator", "gemini", "running", "👑 Lead Advisor synthesizing specialist findings...")
     status_steps.append("🧠 Synthesizing dynamic specialist findings into authoritative verdict...")
 
@@ -550,7 +558,7 @@ Your Task:
     if "Error:" in final_advisor_answer or not final_advisor_answer.strip():
         final_advisor_answer = await query_local_slot(synthesis_prompt, system="You are the Lead Advisor.")
 
-    # 5. Build and Save Artifact directly to Disk
+    # 6. Build and Save Artifact directly to Disk
     artifact = None
     msg_lower = message.lower()
     is_review = any(k in msg_lower for k in ["review", "audit", "check diff", "inspect code", "quality"])
@@ -582,6 +590,7 @@ Your Task:
         "status_steps": status_steps,
         "routing": route,
         "artifact": artifact,
+        "plan": optimal_plan.to_dict(),
         "repo_name": ctx.get("name", "Workspace"),
         "duration": duration,
         "timestamp": int(time.time() * 1000)
