@@ -1,0 +1,16 @@
+#!/usr/bin/env python3
+"""
+Swarm AI Studio Launcher Executable
+"""
+
+import sys
+from pathlib import Path
+
+# Add project root to sys.path
+pkg_root = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(pkg_root))
+
+from swarm.cli import main
+
+if __name__ == "__main__":
+    main()

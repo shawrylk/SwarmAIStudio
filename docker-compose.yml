@@ -1,0 +1,18 @@
+version: "3.8"
+
+services:
+  swarm-studio:
+    build: .
+    container_name: swarm-ai-studio
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      - SWARM_PORT=8080
+      - SWARM_HOST=0.0.0.0
+      - LFM_URL=http://host.docker.internal:8034/v1/chat/completions
+    volumes:
+      - ~/.swarm:/root/.swarm
+      - ~/Documents/GitHub:/root/Documents/GitHub:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

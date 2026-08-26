@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "swarm-ai-studio"
+version = "1.2.0"
+description = "Task-Aware Dynamic GPU Swarm Intelligence & Complete GitHub Desktop Web Suite"
+readme = "README.md"
+authors = [{ name = "Shawry & DeepMind AI Team" }]
+license = { text = "MIT" }
+requires-python = ">=3.10"
+dependencies = [
+    "httpx>=0.27.0",
+    "psutil>=5.9.0",
+]
+
+[project.scripts]
+swarm-studio = "swarm.cli:main"
+swarm = "swarm.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["swarm*"]

@@ -1,0 +1,542 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Swarm AI Studio · Dynamic GPU Swarm & GitHub Desktop</title>
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+
+  <header>
+    <div class="brand">
+      <span class="brand-icon">🌌</span>
+      <div>
+        <h1>Swarm AI Studio</h1>
+      </div>
+    </div>
+
+    <div class="tab-bar">
+      <button class="tab-btn active" id="tabChatBtn" onclick="switchTab('chat')">💬 AI Advisor</button>
+      <button class="tab-btn" id="tabGitBtn" onclick="switchTab('git')">🌿 GitHub Desktop</button>
+      <button class="tab-btn" id="tabTopoBtn" onclick="switchTab('topo')">🕸️ Swarm Topology</button>
+      <button class="tab-btn" id="tabVaultBtn" onclick="switchTab('vault')">📁 Artifacts</button>
+    </div>
+
+    <div class="header-center">
+      <span style="font-size:12px; color:#cbd5e1; font-weight:700;">Repo:</span>
+      <select id="repoSelect" class="repo-select" onchange="onRepoChanged()">
+        <option value="">Discovering projects...</option>
+      </select>
+    </div>
+
+    <div class="telemetry-pills">
+      <div class="pill">
+        <span class="dot"></span>
+        <span id="vramVal">VRAM: 0/16GB</span>
+      </div>
+      <div class="pill">
+        <span id="gpuVal">GPU: 0%</span>
+      </div>
+      <div class="pill">
+        <span id="ramVal">RAM: 0/30GB</span>
+      </div>
+      <div class="pill">
+        <span id="modelVal" style="color:var(--accent);">LFM 2.5: 8 SLOTS READY</span>
+      </div>
+    </div>
+  </header>
+
+  <div class="main-body">
+
+    <!-- LEFT SIDEBAR: MULTI-CHAT SESSIONS -->
+    <div class="chat-sidebar" id="chatSidebar">
+      <div class="sidebar-header">
+        <button class="new-chat-btn" onclick="startNewChat()">➕ New Chat Session</button>
+      </div>
+      <div class="session-list" id="sessionListContainer">
+        <!-- Sessions rendered dynamically -->
+      </div>
+    </div>
+
+    <!-- TAB 1: AI ADVISOR CHAT -->
+    <div class="tab-content active" id="tabChat">
+      <div class="chat-container" id="chatContainer">
+        <div class="msg-row" id="welcomeMsgRow">
+          <div class="msg-assistant">
+            <div class="msg-header">
+              <div class="msg-author">🤖 Direct Lead Advisor (GitHub Desktop Integrated)</div>
+              <span style="font-size:12px; color:var(--green); font-weight:700;" id="sessionStatusBadge">Ready</span>
+            </div>
+            <div class="markdown-body">
+              <p>Welcome to <b>Swarm AI Studio</b> with complete <b>GitHub Desktop</b> integration:</p>
+              <ul>
+                <li><b>🌿 Complete GitHub Desktop Suite:</b> Click the <b>"🌿 GitHub Desktop"</b> tab to inspect diffs, stage files, commit, push, switch/create branches, manage stashes, and view full visual commit history!</li>
+                <li><b>🎯 Task-Aware Dynamic Swarm:</b> Analyzes task complexity and dynamically scales 1 to 8 GPU slots with tailored skills.</li>
+                <li><b>💬 Multi-Chat Persistence:</b> Create and switch between independent sessions on the left sidebar.</li>
+              </ul>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="input-section">
+        <div class="input-wrapper">
+          <div class="quick-actions">
+            <button class="action-btn" onclick="sendQuickPrompt('Run a comprehensive security, performance, and architecture audit on this repository.')">🚀 Full Swarm Audit</button>
+            <button class="action-btn" onclick="sendQuickPrompt('Scan the repository files and locate all entrypoints and project manifests.')">🔍 Scout Files</button>
+            <button class="action-btn" onclick="sendQuickPrompt('Design an ultra-low latency caching layer with distributed locks.')">⚡ Design Blueprint</button>
+            <button class="action-btn" onclick="pasteFromClipboard()">📋 Paste Clipboard</button>
+            <button class="action-btn danger" onclick="confirmClearCurrentSession()">🗑️ Clear Current Chat</button>
+          </div>
+
+          <div class="input-row">
+            <textarea id="promptInput" placeholder="Ask anything, assign a task, or review code... (Use ↑ / ↓ arrow keys for history)" oninput="autoResize(this)"></textarea>
+            <button class="send-btn" id="sendBtn" onclick="submitMessage()">
+              <span id="btnIcon">➔</span>
+              <span id="btnText">Send</span>
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- TAB 2: FULL GITHUB DESKTOP WEB INTERFACE -->
+    <div class="tab-content" id="tabGit">
+      <div class="ghd-container">
+        
+        <!-- Top Bar: Current Repo, Current Branch Dropdown, Fetch/Push/Pull -->
+        <div class="ghd-topbar">
+          <div class="ghd-repo-group">
+            <button class="ghd-badge-btn" onclick="document.getElementById('repoSelect').focus()">
+              📁 <span id="ghdRepoName">Repository</span>
+            </button>
+            
+            <!-- Branch Selector Button -->
+            <button class="ghd-badge-btn" onclick="toggleBranchModal()" id="ghdBranchBtn">
+              🌿 <span id="ghdCurrentBranch">main</span> ▾
+            </button>
+
+            <!-- Branch Switcher Dropdown Modal -->
+            <div class="branch-modal" id="branchModal" onclick="event.stopPropagation()">
+              <input class="branch-search-input" id="branchSearchInput" placeholder="Filter or create branch..." oninput="filterBranches(this.value)">
+              <div class="branch-list-scroll" id="branchListScroll">
+                <!-- Branches populated here -->
+              </div>
+              <div style="padding:8px; border-top:1px solid #334155;">
+                <button class="action-btn" style="width:100%; justify-content:center;" onclick="createAndCheckoutBranch()">+ Create New Branch</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Fetch / Pull / Push Action Group -->
+          <div style="display:flex; align-items:center; gap:8px;">
+            <button class="action-btn" onclick="ghdFetch()">🔄 Fetch Origin</button>
+            <button class="action-btn" onclick="ghdPull()" id="ghdPullBtn">⬇️ Pull <span id="ghdBehindCount">0</span></button>
+            <button class="ghd-sync-btn" onclick="ghdPush()" id="ghdPushBtn">⬆️ Push <span id="ghdAheadCount">0</span></button>
+            <button class="action-btn" onclick="openStashModal()">📦 Stash</button>
+            <button class="action-btn" onclick="openWorktreeModal()">🌳 Worktree</button>
+          </div>
+        </div>
+
+        <!-- Split View: Left (Changes & History) | Right (Diff Viewer) -->
+        <div class="ghd-split-view">
+          
+          <!-- Left Pane (360px) -->
+          <div class="ghd-left-pane">
+            <div class="ghd-nav-tabs">
+              <button class="ghd-nav-tab active" id="ghdTabChangesBtn" onclick="switchGhdTab('changes')">Changes (<span id="ghdChangesCount">0</span>)</button>
+              <button class="ghd-nav-tab" id="ghdTabHistoryBtn" onclick="switchGhdTab('history')">History</button>
+            </div>
+
+            <!-- 1. CHANGES TAB -->
+            <div id="ghdChangesTab" style="display:flex; flex-direction:column; flex:1; overflow:hidden;">
+              <div style="padding:8px 12px; background:#070a12; border-bottom:1px solid #1e293b; display:flex; justify-content:space-between; align-items:center; font-size:12px;">
+                <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-weight:700;">
+                  <input type="checkbox" id="selectAllCheckbox" onchange="toggleSelectAllFiles(this.checked)" checked>
+                  Select All
+                </label>
+                <span style="color:var(--text-muted);" id="ghdSelectedCount">0 files selected</span>
+              </div>
+
+              <div class="ghd-changes-list" id="ghdChangesList">
+                <div style="color:var(--text-muted); text-align:center; padding:20px;">Loading changes...</div>
+              </div>
+
+              <!-- Commit Box at Bottom -->
+              <div class="ghd-commit-box">
+                <input class="ghd-input-summary" id="commitSummaryInput" placeholder="Summary (required)" oninput="updateCommitBtnState()">
+                <textarea class="ghd-input-desc" id="commitDescInput" placeholder="Description"></textarea>
+                <button class="ghd-commit-btn" id="commitActionBtn" onclick="ghdCommit()" disabled>
+                  ✓ Commit to <span id="commitTargetBranch">main</span>
+                </button>
+              </div>
+            </div>
+
+            <!-- 2. HISTORY TAB -->
+            <div id="ghdHistoryTab" style="display:none; flex-direction:column; flex:1; overflow:hidden;">
+              <div class="ghd-history-list" id="ghdHistoryList">
+                <!-- Commits populated dynamically -->
+              </div>
+            </div>
+
+          </div>
+
+          <!-- Right Main Stage: Diff Viewer -->
+          <div class="ghd-right-pane">
+            <div class="ghd-diff-header">
+              <span id="ghdDiffTitle">Select a file to inspect diff</span>
+              <div style="display:flex; gap:8px;">
+                <button class="action-btn" id="ghdDiscardFileBtn" style="display:none;" onclick="discardSelectedFile()">🗑️ Discard Changes</button>
+              </div>
+            </div>
+            <div class="ghd-diff-viewer" id="ghdDiffContent">
+              <div style="color:var(--text-muted); padding:20px;">Select a modified file on the left to review unified diff.</div>
+            </div>
+          </div>
+
+        </div>
+
+      </div>
+    </div>
+
+    <!-- TAB 3: PARALLEL SWARM TOPOLOGY -->
+    <div class="tab-content" id="tabTopo">
+      <div class="topology-container" style="flex:1; padding:20px; max-width:1300px; margin:0 auto; width:100%; display:flex; flex-direction:column; gap:8px; align-items:center;">
+        
+        <div class="registry-header" style="width:100%; display:flex; justify-content:space-between; align-items:center; background:#0f172a; border:2px solid #334155; border-radius:10px; padding:12px 20px; margin-bottom:10px;">
+          <div>
+            <div style="font-weight:800; color:#ffffff; font-size:15px;">🕸️ Task-Aware Swarm Topology & Dynamic Sub-Agent Slots</div>
+            <div style="font-size:12.5px; color:#cbd5e1;">Sub-agents scale dynamically from 1 to 8 GPU continuous batching slots with custom skill roles.</div>
+          </div>
+          <div class="header-actions" style="display:flex; align-items:center; gap:10px;">
+            <button class="action-btn" onclick="rescoutModels()" id="rescoutBtn" style="border-color:var(--accent); color:var(--accent); font-weight:700;">🔄 Rescout Models</button>
+            <div class="node-count-badge" id="agentCountBadge">🤖 7 Nodes Registered (0 Running / Idle)</div>
+          </div>
+        </div>
+
+        <!-- Level 1: Master Orchestrator -->
+        <div style="display:flex; justify-content:center; width:100%;">
+          <div class="agent-card" id="node-gemini" style="width:480px; border:2px solid var(--purple); background:#17132b; box-shadow:0 0 28px var(--purple-glow); border-radius:12px; padding:14px; display:flex; flex-direction:column; gap:6px;">
+            <div style="display:flex; justify-content:space-between; align-items:center;">
+              <span style="font-weight:800; color:#ffffff; font-size:14px;">👑 Gemini Lead Advisor</span>
+              <span class="status-badge badge-idle" id="badge-gemini">IDLE</span>
+            </div>
+            <div style="font-size:10.5px; color:#94a3b8; font-weight:800;">LEVEL 1: CHIEF ARCHITECT & TASK DECOMPOSER</div>
+            <div style="display:flex; align-items:center; justify-content:space-between; background:#070a12; border:1.5px solid #334155; border-radius:8px; padding:5px 8px;">
+              <label style="font-size:10px; color:#cbd5e1; font-weight:800;">MODEL:</label>
+              <select class="card-model-select" id="select-gemini" onchange="updateModelAssignment('gemini', this.value)" style="background:transparent; border:none; color:var(--accent); font-family:monospace; font-size:11.5px; font-weight:700; outline:none; cursor:pointer; width:100%;">
+                <option value="">Scouting models...</option>
+              </select>
+            </div>
+            <div class="agent-task" id="task-gemini" style="font-family:monospace; font-size:11px; background:#070a12; padding:6px 10px; border-radius:8px; border:1px solid #1e293b; color:#ffffff;">Awaiting user task...</div>
+          </div>
+        </div>
+
+        <!-- Arrow -->
+        <div style="display:flex; flex-direction:column; align-items:center; height:32px;">
+          <div style="width:3px; height:20px; background:linear-gradient(to bottom, #c084fc, #38bdf8);"></div>
+        </div>
+
+        <!-- Level 2: Consensus Oracles -->
+        <div style="display:flex; justify-content:center; gap:16px; width:100%;">
+          <div class="agent-card" id="node-lfm" style="width:380px; background:var(--card-bg); border:1.5px solid var(--card-border); border-radius:12px; padding:14px; display:flex; flex-direction:column; gap:6px;">
+            <div style="display:flex; justify-content:space-between; align-items:center;">
+              <span style="font-weight:800; color:var(--accent); font-size:14px;">⚡ Local GPU Swarm Host</span>
+              <span class="status-badge badge-online" id="badge-lfm">ONLINE</span>
+            </div>
+            <div style="font-size:10.5px; color:#94a3b8; font-weight:800;">LEVEL 2: DYNAMIC BATCHING HOST (8 SLOTS)</div>
+            <div style="font-family:monospace; font-size:11px; background:#070a12; color:var(--accent); border:1px solid #1e293b; padding:3px 7px; border-radius:6px; font-weight:700;">⚡ Dedicated: Liquid LFM 2.5 (2.6B Q8)</div>
+            <div class="agent-task" id="task-lfm" style="font-family:monospace; font-size:11px; background:#070a12; padding:6px 10px; border-radius:8px; border:1px solid #1e293b; color:#ffffff;">Port 8034 (8 continuous batching slots)</div>
+          </div>
+
+          <div class="agent-card" id="node-qwen" style="width:380px; background:var(--card-bg); border:1.5px solid var(--card-border); border-radius:12px; padding:14px; display:flex; flex-direction:column; gap:6px;">
+            <div style="display:flex; justify-content:space-between; align-items:center;">
+              <span style="font-weight:800; color:var(--green); font-size:14px;">🔮 Qwen Web Oracle</span>
+              <span class="status-badge badge-online" id="badge-qwen">READY</span>
+            </div>
+            <div style="font-size:10.5px; color:#94a3b8; font-weight:800;">LEVEL 2: ADVERSARIAL CONSENSUS PEER</div>
+            <div style="display:flex; align-items:center; justify-content:space-between; background:#070a12; border:1.5px solid #334155; border-radius:8px; padding:5px 8px;">
+              <label style="font-size:10px; color:#cbd5e1; font-weight:800;">MODEL:</label>
+              <select class="card-model-select" id="select-qwen" onchange="updateModelAssignment('qwen', this.value)" style="background:transparent; border:none; color:var(--accent); font-family:monospace; font-size:11.5px; font-weight:700; outline:none; cursor:pointer; width:100%;">
+                <option value="qwen-3.8-max">Qwen 3.8 Max</option>
+                <option value="qwen-3.8-coder">Qwen 3.8 Coder</option>
+                <option value="qwen-3.8-thinking">Qwen 3.8 Thinking</option>
+                <option value="qwen-3.8-27b">Qwen 3.8 27B</option>
+              </select>
+            </div>
+            <div class="agent-task" id="task-qwen" style="font-family:monospace; font-size:11px; background:#070a12; padding:6px 10px; border-radius:8px; border:1px solid #1e293b; color:#ffffff;">chat.qwen.ai session (Qwen 3.8 Max)</div>
+          </div>
+        </div>
+
+        <!-- Arrow -->
+        <div style="display:flex; flex-direction:column; align-items:center; height:32px;">
+          <div style="width:3px; height:20px; background:linear-gradient(to bottom, #c084fc, #38bdf8);"></div>
+        </div>
+
+        <!-- Level 3: Dynamic Sub-Agents -->
+        <div style="font-size:12px; text-transform:uppercase; color:#93c5fd; font-weight:800; letter-spacing:1.2px; margin-bottom:4px;">
+          LEVEL 3: DYNAMIC SUB-AGENTS (SCALED 1 TO 8 ON GPU BY TASK COMPLEXITY)
+        </div>
+        <div style="display:flex; justify-content:center; gap:16px; width:100%; flex-wrap:wrap;" id="dynamicSubagentsContainer">
+          <!-- Populated dynamically -->
+        </div>
+
+        <!-- ─────────────────────────────────────────────────────────────
+             SWARM SKILLS & DYNAMIC ROLES LEGEND (CAPACITY MATRIX)
+             ───────────────────────────────────────────────────────────── -->
+        <div style="width:100%; margin-top:36px; display:flex; flex-direction:column; gap:16px;">
+          
+          <div style="display:flex; justify-content:space-between; align-items:center; background:#0f172a; border:2px solid #334155; border-radius:10px; padding:14px 20px; box-shadow:0 6px 18px rgba(0,0,0,0.5);">
+            <div>
+              <div style="font-weight:800; color:#ffffff; font-size:15px; display:flex; align-items:center; gap:8px;">
+                <span>📚 Swarm Skill & Dynamic Role Catalog</span>
+                <span style="font-size:11.5px; background:rgba(56,189,248,0.2); color:var(--accent); border:1px solid var(--accent); padding:2px 8px; border-radius:12px; font-weight:800;">CAPACITY MATRIX</span>
+              </div>
+              <div style="font-size:12.5px; color:#cbd5e1; margin-top:2px;">Complete roster of specialized skills and sub-agent roles dynamically assigned across the 8 continuous batching GPU slots.</div>
+            </div>
+            <div style="display:flex; gap:10px; align-items:center;">
+              <input class="git-input" id="legendFilterInput" placeholder="🔍 Filter skills (e.g. security, async, db)..." oninput="filterLegendCards(this.value)" style="width:260px; font-size:12px;">
+              <div class="node-count-badge" style="background:#1e293b; color:var(--accent); white-space:nowrap;">⚡ 12 Specialized Roles</div>
+            </div>
+          </div>
+
+          <!-- Capacity Legend Grid -->
+          <div id="legendGrid" style="display:grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap:16px; width:100%;">
+            
+            <!-- 1. Security Threat Auditor -->
+            <div class="legend-card" data-keywords="security owasp injection auth token cve vulnerability jwt">
+              <div style="display:flex; justify-content:space-between; align-items:center;">
+                <span style="font-weight:800; color:#ffffff; font-size:14px;">🛡️ Security Threat Auditor</span>
+                <span class="file-status-badge status-d">LEVEL 3</span>
+              </div>
+              <div style="font-size:11px; color:#94a3b8; font-weight:800;">DOMAIN: APPLICATION SECURITY & AUTHENTICATION</div>
+              <div style="font-family:monospace; font-size:11.5px; background:#070a12; color:var(--rose); border:1px solid rgba(244,63,94,0.3); padding:4px 8px; border-radius:6px; font-weight:700;">🎯 Skill: OWASP & Injection Hunter</div>
+              <div style="font-size:12.5px; color:#cbd5e1; line-height:1.5;">Audits SQL injection, JWT validation, IDOR, SSRF, secret leaks, and evaluates cryptographic token invariants.</div>
+              <div style="font-size:11px; color:#93c5fd; font-family:monospace; background:rgba(15,23,42,0.8); padding:5px 8px; border-radius:6px; border:1px solid #1e293b;">
+                ⚡ <b>Trigger:</b> Security audits, full codebase reviews, auth changes<br>
+                🛠️ <b>Tools:</b> <span class="tool-tag">auth_audit</span> <span class="tool-tag">injection_check</span> <span class="tool-tag">secret_leak_hunt</span>
+              </div>
+            </div>
+
+            <!-- 2. Performance & Memory Profiler -->
+            <div class="legend-card" data-keywords="performance memory latency n+1 async deadlock profile cpu alloc">
+              <div style="display:flex; justify-content:space-between; align-items:center;">
+                <span style="font-weight:800; color:#ffffff; font-size:14px;">⚡ Performance & Memory Profiler</span>
+                <span class="file-status-badge status-m">LEVEL 3</span>
+              </div>
+              <div style="font-size:11px; color:#94a3b8; font-weight:800;">DOMAIN: RESOURCE EFFICIENCY & LATENCY</div>
+              <div style="font-family:monospace; font-size:11.5px; background:#070a12; color:var(--orange); border:1px solid rgba(251,146,60,0.3); padding:4px 8px; border-radius:6px; font-weight:700;">🎯 Skill: Latency & Allocation Optimizer</div>
+              <div style="font-size:12.5px; color:#cbd5e1; line-height:1.5;">Hunts unindexed queries, N+1 query patterns, blocking I/O calls on hot paths, heap allocations, and memory leaks.</div>
+              <div style="font-size:11px; color:#93c5fd; font-family:monospace; background:rgba(15,23,42,0.8); padding:5px 8px; border-radius:6px; border:1px solid #1e293b;">
+                ⚡ <b>Trigger:</b> Performance reviews, high-throughput refactors<br>
+                🛠️ <b>Tools:</b> <span class="tool-tag">n_plus_one_scan</span> <span class="tool-tag">async_block_check</span> <span class="tool-tag">mem_leak_detect</span>
+              </div>
+            </div>
+
+            <!-- 3. Architecture & Modular Gate -->
+            <div class="legend-card" data-keywords="architecture clean domain modular coupling cohesion design pattern">
+              <div style="display:flex; justify-content:space-between; align-items:center;">
+                <span style="font-weight:800; color:#ffffff; font-size:14px;">📐 Architecture & Modular Gate</span>
+                <span class="file-status-badge status-u">LEVEL 3</span>
+              </div>
+              <div style="font-size:11px; color:#94a3b8; font-weight:800;">DOMAIN: SYSTEM DESIGN & BOUNDARY INTEGRITY</div>
+              <div style="font-family:monospace; font-size:11.5px; background:#070a12; color:var(--accent); border:1px solid rgba(56,189,248,0.3); padding:4px 8px; border-radius:6px; font-weight:700;">🎯 Skill: Clean Architecture & Cohesion</div>
+              <div style="font-size:12.5px; color:#cbd5e1; line-height:1.5;">Enforces domain model purity, separation of concerns, dependency inversion, and checks for circular references.</div>
+              <div style="font-size:11px; color:#93c5fd; font-family:monospace; background:rgba(15,23,42,0.8); padding:5px 8px; border-radius:6px; border:1px solid #1e293b;">
+                ⚡ <b>Trigger:</b> Multi-module PRs, refactoring blueprints<br>
+                🛠️ <b>Tools:</b> <span class="tool-tag">coupling_audit</span> <span class="tool-tag">interface_verify</span> <span class="tool-tag">check_syntax</span>
+              </div>
+            </div>
+
+            <!-- 4. QA & Regression Gatekeeper -->
+            <div class="legend-card" data-keywords="qa compiler lsp contract verify regression tests test roslyn">
+              <div style="display:flex; justify-content:space-between; align-items:center;">
+                <span style="font-weight:800; color:#ffffff; font-size:14px;">🧪 QA & Regression Gatekeeper</span>
+                <span class="file-status-badge status-a">LEVEL 3</span>
+              </div>
+              <div style="font-size:11px; color:#94a3b8; font-weight:800;">DOMAIN: COMPILER CONTRACTS & TEST INTEGRITY</div>
+              <div style="font-family:monospace; font-size:11.5px; background:#070a12; color:var(--green); border:1px solid rgba(74,222,128,0.3); padding:4px 8px; border-radius:6px; font-weight:700;">🎯 Skill: Compiler & Contract Verifier</div>
+              <div style="font-size:12.5px; color:#cbd5e1; line-height:1.5;">Validates strict type contracts, compiler diagnostics, null safety invariants, and generates edge-case unit tests.</div>
+              <div style="font-size:11px; color:#93c5fd; font-family:monospace; background:rgba(15,23,42,0.8); padding:5px 8px; border-radius:6px; border:1px solid #1e293b;">
+                ⚡ <b>Trigger:</b> Bug fixes, code implementations, PR checks<br>
+                🛠️ <b>Tools:</b> <span class="tool-tag">dotnet_build</span> <span class="tool-tag">contract_verify</span> <span class="tool-tag">edge_case_probe</span>
+              </div>
+            </div>
+
+            <!-- 5. Symbol & AST Scout -->
+            <div class="legend-card" data-keywords="scout symbol ast find grep search locate gitnexus index">
+              <div style="display:flex; justify-content:space-between; align-items:center;">
+                <span style="font-weight:800; color:#ffffff; font-size:14px;">🔍 Symbol & AST Scout</span>
+                <span class="file-status-badge status-u">LEVEL 3</span>
+              </div>
+              <div style="font-size:11px; color:#94a3b8; font-weight:800;">DOMAIN: CODEBASE NAVIGATION & KNOWLEDGE GRAPH</div>
+              <div style="font-family:monospace; font-size:11.5px; background:#070a12; color:var(--accent); border:1px solid rgba(56,189,248,0.3); padding:4px 8px; border-radius:6px; font-weight:700;">🎯 Skill: Codebase Navigation & File Hunter</div>
+              <div style="font-size:12.5px; color:#cbd5e1; line-height:1.5;">Rapidly scans the repository graph, locates classes, methods, project manifests, and traces symbol cross-references.</div>
+              <div style="font-size:11px; color:#93c5fd; font-family:monospace; background:rgba(15,23,42,0.8); padding:5px 8px; border-radius:6px; border:1px solid #1e293b;">
+                ⚡ <b>Trigger:</b> File searches, symbol lookups, project mapping<br>
+                🛠️ <b>Tools:</b> <span class="tool-tag">find_by_name</span> <span class="tool-tag">grep_search</span> <span class="tool-tag">gitnexus</span>
+              </div>
+            </div>
+
+            <!-- 6. Database & I/O Inspector -->
+            <div class="legend-card" data-keywords="database sql orm efcore migration transaction io persistence postgres">
+              <div style="display:flex; justify-content:space-between; align-items:center;">
+                <span style="font-weight:800; color:#ffffff; font-size:14px;">💾 Database & I/O Inspector</span>
+                <span class="file-status-badge status-m">LEVEL 3</span>
+              </div>
+              <div style="font-size:11px; color:#94a3b8; font-weight:800;">DOMAIN: DATA LAYER & PERSISTENCE SAFETY</div>
+              <div style="font-family:monospace; font-size:11.5px; background:#070a12; color:var(--orange); border:1px solid rgba(251,146,60,0.3); padding:4px 8px; border-radius:6px; font-weight:700;">🎯 Skill: SQL & Persistence Optimizer</div>
+              <div style="font-size:12.5px; color:#cbd5e1; line-height:1.5;">Audits entity models, migration history, ACID transaction boundaries, and index utilization across tables.</div>
+              <div style="font-size:11px; color:#93c5fd; font-family:monospace; background:rgba(15,23,42,0.8); padding:5px 8px; border-radius:6px; border:1px solid #1e293b;">
+                ⚡ <b>Trigger:</b> Database schema updates, ORM refactors<br>
+                🛠️ <b>Tools:</b> <span class="tool-tag">sql_audit</span> <span class="tool-tag">transaction_check</span> <span class="tool-tag">schema_verify</span>
+              </div>
+            </div>
+
+            <!-- 7. Surgical Code Draftsman -->
+            <div class="legend-card" data-keywords="code implementation draftsman patch fix write build refactor">
+              <div style="display:flex; justify-content:space-between; align-items:center;">
+                <span style="font-weight:800; color:#ffffff; font-size:14px;">⚙️ Surgical Code Draftsman</span>
+                <span class="file-status-badge status-a">LEVEL 3</span>
+              </div>
+              <div style="font-size:11px; color:#94a3b8; font-weight:800;">DOMAIN: PRODUCTION CODE IMPLEMENTATION</div>
+              <div style="font-family:monospace; font-size:11.5px; background:#070a12; color:var(--green); border:1px solid rgba(74,222,128,0.3); padding:4px 8px; border-radius:6px; font-weight:700;">🎯 Skill: Production Patch Synthesis</div>
+              <div style="font-size:12.5px; color:#cbd5e1; line-height:1.5;">Produces surgical, atomic code modifications with exact file paths, clean error handling, and minimal diff footprint.</div>
+              <div style="font-size:11px; color:#93c5fd; font-family:monospace; background:rgba(15,23,42,0.8); padding:5px 8px; border-radius:6px; border:1px solid #1e293b;">
+                ⚡ <b>Trigger:</b> Bug fixes, feature coding, refactoring tasks<br>
+                🛠️ <b>Tools:</b> <span class="tool-tag">replace_content</span> <span class="tool-tag">write_file</span>
+              </div>
+            </div>
+
+            <!-- 8. Blast Radius Gatekeeper -->
+            <div class="legend-card" data-keywords="blast radius regression gate impact ripple downstream dependency">
+              <div style="display:flex; justify-content:space-between; align-items:center;">
+                <span style="font-weight:800; color:#ffffff; font-size:14px;">🛡️ Blast Radius Gatekeeper</span>
+                <span class="file-status-badge status-d">LEVEL 3</span>
+              </div>
+              <div style="font-size:11px; color:#94a3b8; font-weight:800;">DOMAIN: ZERO-DRIFT & DOWNSTREAM PROTECTION</div>
+              <div style="font-family:monospace; font-size:11.5px; background:#070a12; color:var(--rose); border:1px solid rgba(244,63,94,0.3); padding:4px 8px; border-radius:6px; font-weight:700;">🎯 Skill: Zero-Drift Regression Protection</div>
+              <div style="font-size:12.5px; color:#cbd5e1; line-height:1.5;">Computes downstream ripple effects across dependent services, libraries, and callers to guarantee zero unintended breaks.</div>
+              <div style="font-size:11px; color:#93c5fd; font-family:monospace; background:rgba(15,23,42,0.8); padding:5px 8px; border-radius:6px; border:1px solid #1e293b;">
+                ⚡ <b>Trigger:</b> Major refactors, shared utility modifications<br>
+                🛠️ <b>Tools:</b> <span class="tool-tag">git_diff</span> <span class="tool-tag">gitnexus_impact</span>
+              </div>
+            </div>
+
+            <!-- 9. API Contract & Schema Gatekeeper -->
+            <div class="legend-card" data-keywords="api rest graphql schema contract openapi backward compatibility dto">
+              <div style="display:flex; justify-content:space-between; align-items:center;">
+                <span style="font-weight:800; color:#ffffff; font-size:14px;">🌐 API Contract Gatekeeper</span>
+                <span class="file-status-badge status-u">LEVEL 3</span>
+              </div>
+              <div style="font-size:11px; color:#94a3b8; font-weight:800;">DOMAIN: PUBLIC INTERFACES & BACKWARD COMPATIBILITY</div>
+              <div style="font-family:monospace; font-size:11.5px; background:#070a12; color:var(--accent); border:1px solid rgba(56,189,248,0.3); padding:4px 8px; border-radius:6px; font-weight:700;">🎯 Skill: Schema Contract & Idempotency</div>
+              <div style="font-size:12.5px; color:#cbd5e1; line-height:1.5;">Enforces REST/GraphQL schema stability, pagination patterns, idempotency tokens, and status code consistency.</div>
+              <div style="font-size:11px; color:#93c5fd; font-family:monospace; background:rgba(15,23,42,0.8); padding:5px 8px; border-radius:6px; border:1px solid #1e293b;">
+                ⚡ <b>Trigger:</b> HTTP/REST endpoint changes, DTO modifications<br>
+                🛠️ <b>Tools:</b> <span class="tool-tag">openapi_verify</span> <span class="tool-tag">schema_diff</span>
+              </div>
+            </div>
+
+            <!-- 10. Concurrency & Scalability Specialist -->
+            <div class="legend-card" data-keywords="concurrency async scaling distributed locks thread race channel">
+              <div style="display:flex; justify-content:space-between; align-items:center;">
+                <span style="font-weight:800; color:#ffffff; font-size:14px;">⚡ Concurrency & Scaling Specialist</span>
+                <span class="file-status-badge status-m">LEVEL 3</span>
+              </div>
+              <div style="font-size:11px; color:#94a3b8; font-weight:800;">DOMAIN: HIGH-THROUGHPUT CONCURRENCY & LOCKS</div>
+              <div style="font-family:monospace; font-size:11.5px; background:#070a12; color:var(--orange); border:1px solid rgba(251,146,60,0.3); padding:4px 8px; border-radius:6px; font-weight:700;">🎯 Skill: High-Throughput Async & Locks</div>
+              <div style="font-size:12.5px; color:#cbd5e1; line-height:1.5;">Designs distributed locking mechanisms, thread synchronization boundaries, and prevents race conditions.</div>
+              <div style="font-size:11px; color:#93c5fd; font-family:monospace; background:rgba(15,23,42,0.8); padding:5px 8px; border-radius:6px; border:1px solid #1e293b;">
+                ⚡ <b>Trigger:</b> High-load architecture tasks, caching designs<br>
+                🛠️ <b>Tools:</b> <span class="tool-tag">latency_profile</span> <span class="tool-tag">scale_design</span>
+              </div>
+            </div>
+
+            <!-- 11. Qwen Web Oracle -->
+            <div class="legend-card" data-keywords="qwen oracle consensus peer 3.8 max moe adversarial web reasoning">
+              <div style="display:flex; justify-content:space-between; align-items:center;">
+                <span style="font-weight:800; color:#ffffff; font-size:14px;">🔮 Qwen Web Oracle</span>
+                <span class="file-status-badge status-a">LEVEL 2</span>
+              </div>
+              <div style="font-size:11px; color:#94a3b8; font-weight:800;">DOMAIN: ADVERSARIAL CONSENSUS & FRONTIER REASONING</div>
+              <div style="font-family:monospace; font-size:11.5px; background:#070a12; color:var(--green); border:1px solid rgba(74,222,128,0.3); padding:4px 8px; border-radius:6px; font-weight:700;">🎯 Skill: 2.4T MoE Adversarial Validation</div>
+              <div style="font-size:12.5px; color:#cbd5e1; line-height:1.5;">Provides dual-AI cross-checks, edge-case probing, and counter-architectural perspectives via chat.qwen.ai.</div>
+              <div style="font-size:11px; color:#93c5fd; font-family:monospace; background:rgba(15,23,42,0.8); padding:5px 8px; border-radius:6px; border:1px solid #1e293b;">
+                ⚡ <b>Trigger:</b> Consensus reviews, deep architectural inquiries<br>
+                🛠️ <b>Tools:</b> <span class="tool-tag">web_ask</span> <span class="tool-tag">oracle_crosscheck</span>
+              </div>
+            </div>
+
+            <!-- 12. Gemini Lead Advisor -->
+            <div class="legend-card" data-keywords="gemini lead advisor orchestrator synthesis decomposition architect">
+              <div style="display:flex; justify-content:space-between; align-items:center;">
+                <span style="font-weight:800; color:#ffffff; font-size:14px;">👑 Gemini Lead Advisor</span>
+                <span class="file-status-badge" style="background:rgba(192,132,252,0.2); color:var(--purple); border:1px solid var(--purple);">LEVEL 1</span>
+              </div>
+              <div style="font-size:11px; color:#94a3b8; font-weight:800;">DOMAIN: CHIEF ARCHITECT & HIGH-LEVEL ORCHESTRATION</div>
+              <div style="font-family:monospace; font-size:11.5px; background:#070a12; color:var(--purple); border:1px solid rgba(192,132,252,0.3); padding:4px 8px; border-radius:6px; font-weight:700;">🎯 Skill: Task Decomposition & Multi-Stream Synthesis</div>
+              <div style="font-size:12.5px; color:#cbd5e1; line-height:1.5;">Analyzes task complexity, allocates 1 to 8 GPU slots, oversees specialist execution, and synthesizes authoritative verdicts.</div>
+              <div style="font-size:11px; color:#93c5fd; font-family:monospace; background:rgba(15,23,42,0.8); padding:5px 8px; border-radius:6px; border:1px solid #1e293b;">
+                ⚡ <b>Trigger:</b> Always active on every user prompt<br>
+                🛠️ <b>Tools:</b> <span class="tool-tag">task_planner</span> <span class="tool-tag">synthesis</span> <span class="tool-tag">drift_gate</span>
+              </div>
+            </div>
+
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- TAB 4: ARTIFACTS VAULT -->
+    <div class="tab-content" id="tabVault">
+      <div style="flex:1; padding:20px; max-width:1200px; margin:0 auto; width:100%; display:flex; flex-direction:column; gap:14px;">
+        <div style="display:flex; justify-content:space-between; align-items:center; background:#0f172a; border:2px solid #334155; border-radius:10px; padding:12px 20px;">
+          <div>
+            <div style="font-weight:800; color:#ffffff; font-size:15px;">📁 Remote Artifact Vault & Report Browser</div>
+            <div style="font-size:12.5px; color:#cbd5e1;">Read, copy, and download any generated document directly over HTTP from any PC.</div>
+          </div>
+          <button class="action-btn" onclick="loadArtifactsVault()" style="border-color:var(--accent); color:var(--accent); font-weight:700;">🔄 Refresh Vault</button>
+        </div>
+
+        <table style="width:100%; border-collapse:collapse; background:var(--card-bg); border:1.5px solid var(--card-border); border-radius:10px; overflow:hidden;">
+          <thead>
+            <tr style="background:#0b1120; border-bottom:1px solid #232f48;">
+              <th style="padding:12px 16px; text-align:left; color:#93c5fd; font-weight:800; font-size:12.5px;">Document Name</th>
+              <th style="padding:12px 16px; text-align:left; color:#93c5fd; font-weight:800; font-size:12.5px;">Type</th>
+              <th style="padding:12px 16px; text-align:left; color:#93c5fd; font-weight:800; font-size:12.5px;">Size</th>
+              <th style="padding:12px 16px; text-align:left; color:#93c5fd; font-weight:800; font-size:12.5px;">Last Modified</th>
+              <th style="padding:12px 16px; text-align:left; color:#93c5fd; font-weight:800; font-size:12.5px;">Actions</th>
+            </tr>
+          </thead>
+          <tbody id="vaultTableBody">
+            <tr><td colspan="5" style="text-align:center; color:var(--text-muted); padding:16px;">Loading artifacts...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- In-Page Artifact Modal Reader -->
+  <div class="modal-overlay" id="artifactModal" onclick="closeArtifactModal(event)">
+    <div class="modal-box" onclick="event.stopPropagation()">
+      <div class="modal-header">
+        <span id="modalDocTitle">📄 Document Viewer</span>
+        <div style="display:flex; gap:8px;">
+          <button class="action-btn" id="modalCopyBtn">📋 Copy</button>
+          <button class="action-btn" id="modalDownloadBtn">⬇️ Download</button>
+          <button class="action-btn" onclick="closeArtifactModal()">✕ Close</button>
+        </div>
+      </div>
+      <div class="modal-body markdown-body" id="modalDocContent">
+        Loading document content...
+      </div>
+    </div>
+  </div>
+
+  <script src="/js/app.js"></script>
+</body>
+</html>
