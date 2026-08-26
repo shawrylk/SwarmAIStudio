@@ -8,6 +8,11 @@
 </head>
 <body>
 
+  <!-- OFFLINE NOTIFICATION BANNER (Triggered when server is killed / disconnected) -->
+  <div id="serverOfflineBanner" class="offline-banner">
+    <span>⚠️ Swarm Backend Server Disconnected / Killed — Attempting reconnection to backend...</span>
+  </div>
+
   <header>
     <div class="brand">
       <span class="brand-icon">🌌</span>
@@ -33,7 +38,7 @@
 
     <div class="telemetry-pills">
       <div class="pill">
-        <span class="dot"></span>
+        <span class="dot" id="serverStatusDot"></span>
         <span id="vramVal">VRAM: 0/16GB</span>
       </div>
       <div class="pill">

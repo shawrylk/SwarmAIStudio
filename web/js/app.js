@@ -1,8 +1,10 @@
 /**
  * Swarm AI Studio Frontend Controller
- * Multi-Chat, Full GitHub Desktop, Stash Local Changes, Worktree Manager & Autonomous Loop Agent
+ * Multi-Chat, Full GitHub Desktop, Stash Local Changes, Worktree Manager, Autonomous Loop Agent, & Offline Detection
  */
 
+let isServerConnected = true;
+let consecutiveFailures = 0;
 let activeSessionId = "";
 let promptHistory = [];
 let historyIndex = -1;
@@ -19,6 +21,63 @@ let debugPollInterval = null;
 let currentModalContent = "";
 let currentModalFilename = "";
 let pendingBranchSwitch = null;
+
+function handleServerDisconnected() {
+  consecutiveFailures++;
+  isServerConnected = false;
+
+  const banner = document.getElementById('serverOfflineBanner');
+  if (banner) banner.style.display = 'flex';
+
+  const dot = document.getElementById('serverStatusDot');
+  if (dot) dot.className = 'dot offline';
+
+  const vramEl = document.getElementById('vramVal');
+  if (vramEl) vramEl.innerText = 'VRAM: Offline';
+
+  const gpuEl = document.getElementById('gpuVal');
+  if (gpuEl) gpuEl.innerText = 'GPU: Offline';
+
+  const ramEl = document.getElementById('ramVal');
+  if (ramEl) ramEl.innerText = 'RAM: Offline';
+
+  const modelEl = document.getElementById('modelVal');
+  if (modelEl) {
+    modelEl.innerText = '⚠️ SERVER KILLED / DISCONNECTED';
+    modelEl.style.color = 'var(--rose)';
+  }
+
+  // Update Topology Node status
+  ['gemini', 'lfm', 'qwen'].forEach(id => {
+    updateStaticNodeView(id, 'offline', 'Backend server killed or unreachable');
+  });
+
+  const countBadge = document.getElementById('agentCountBadge');
+  if (countBadge) {
+    countBadge.innerText = '🔴 Server Offline (Reconnecting...)';
+    countBadge.style.borderColor = 'var(--rose)';
+    countBadge.style.color = 'var(--rose)';
+  }
+
+  const loopBadge = document.getElementById('loopStatusBadge');
+  if (loopBadge && loopBadge.innerText !== 'COMPLETED') {
+    loopBadge.innerText = 'OFFLINE';
+    loopBadge.className = 'status-badge badge-offline';
+  }
+}
+
+function handleServerConnected() {
+  if (!isServerConnected) {
+    isServerConnected = true;
+    consecutiveFailures = 0;
+
+    const banner = document.getElementById('serverOfflineBanner');
+    if (banner) banner.style.display = 'none';
+
+    const dot = document.getElementById('serverStatusDot');
+    if (dot) dot.className = 'dot';
+  }
+}
 
 function switchTab(tabId) {
   document.getElementById('tabChatBtn').className = (tabId === 'chat') ? 'tab-btn active' : 'tab-btn';
@@ -86,32 +145,52 @@ async function startAutonomousLoop() {
     } else {
       alert("Loop Error: " + data.error);
     }
-  } catch(e) { alert("Error: " + e.message); }
+  } catch(e) {
+    handleServerDisconnected();
+    alert("Error: " + e.message);
+  }
 }
 
 async function pauseAutonomousLoop() {
-  await fetch('/api/loop/pause', { method: 'POST' });
-  pollLoopState();
+  try {
+    await fetch('/api/loop/pause', { method: 'POST' });
+    pollLoopState();
+  } catch(e) { handleServerDisconnected(); }
 }
 
 async function resumeAutonomousLoop() {
-  await fetch('/api/loop/resume', { method: 'POST' });
-  pollLoopState();
+  try {
+    await fetch('/api/loop/resume', { method: 'POST' });
+    pollLoopState();
+  } catch(e) { handleServerDisconnected(); }
 }
 
 async function stopAutonomousLoop() {
   if (confirm("Stop the autonomous loop execution?")) {
-    await fetch('/api/loop/stop', { method: 'POST' });
-    pollLoopState();
+    try {
+      await fetch('/api/loop/stop', { method: 'POST' });
+      pollLoopState();
+    } catch(e) { handleServerDisconnected(); }
   }
 }
 
 async function pollLoopState() {
   try {
-    const res = await fetch('/api/loop/status', { cache: 'no-store' });
+    const controller = new AbortController();
+    const tId = setTimeout(() => controller.abort(), 2000);
+    const res = await fetch('/api/loop/status', { cache: 'no-store', signal: controller.signal });
+    clearTimeout(tId);
+
+    if (!res.ok) {
+      handleServerDisconnected();
+      return;
+    }
     const state = await res.json();
+    handleServerConnected();
     renderLoopDashboard(state);
-  } catch(e) {}
+  } catch(e) {
+    handleServerDisconnected();
+  }
 }
 
 function renderLoopDashboard(state) {
@@ -248,8 +327,18 @@ function setLoopGoalPrompt(text) {
 // ─────────────────────────────────────────────────────────────
 async function loadGitHubDesktopState() {
   try {
-    const res = await fetch(`/api/git/overview?repo_path=${encodeURIComponent(currentRepoPath)}`, { cache: 'no-store' });
+    const controller = new AbortController();
+    const tId = setTimeout(() => controller.abort(), 2000);
+    const res = await fetch(`/api/git/overview?repo_path=${encodeURIComponent(currentRepoPath)}`, { cache: 'no-store', signal: controller.signal });
+    clearTimeout(tId);
+    
+    if (!res.ok) {
+      handleServerDisconnected();
+      return;
+    }
+
     const data = await res.json();
+    handleServerConnected();
     currentGhdState = data;
 
     if (!data.active) {
@@ -265,7 +354,6 @@ async function loadGitHubDesktopState() {
     document.getElementById('ghdBehindCount').innerText = data.behind || 0;
     document.getElementById('ghdChangesCount').innerText = data.changed_files ? data.changed_files.length : 0;
 
-    // Stash quick badge count
     const stashes = data.stashes || [];
     const stashBtn = document.getElementById('ghdStashNavBtn');
     if (stashBtn) {
@@ -281,7 +369,7 @@ async function loadGitHubDesktopState() {
     renderHistoryList(data.history || []);
 
   } catch(e) {
-    console.error("Error loading GitHub Desktop state:", e);
+    handleServerDisconnected();
   }
 }
 
@@ -403,7 +491,7 @@ async function selectFileForDiff(filePath, isStaged) {
     const res = await fetch(`/api/git/diff?repo_path=${encodeURIComponent(currentRepoPath)}&file=${encodeURIComponent(filePath)}&staged=${isStaged ? 'true' : 'false'}`);
     const data = await res.json();
     renderColoredDiff(data.diff || "No diff available.");
-  } catch(e) {}
+  } catch(e) { handleServerDisconnected(); }
 }
 
 function renderColoredDiff(rawDiff) {
@@ -963,7 +1051,7 @@ async function loadSessionsList() {
     });
 
     await loadActiveSessionMessages();
-  } catch(e) {}
+  } catch(e) { handleServerDisconnected(); }
 }
 
 async function startNewChat() {
@@ -976,7 +1064,7 @@ async function startNewChat() {
     const sess = await res.json();
     activeSessionId = sess.id;
     await loadSessionsList();
-  } catch(e) {}
+  } catch(e) { handleServerDisconnected(); }
 }
 
 async function switchSession(id) {
@@ -1081,7 +1169,7 @@ async function loadActiveSessionMessages() {
 
     historyIndex = promptHistory.length;
     container.scrollTop = container.scrollHeight;
-  } catch(e) {}
+  } catch(e) { handleServerDisconnected(); }
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -1151,7 +1239,7 @@ async function loadArtifactsVault() {
       container.appendChild(card);
     });
 
-  } catch(e) {}
+  } catch(e) { handleServerDisconnected(); }
 }
 
 function toggleArtifactGroup(groupName) {
@@ -1280,7 +1368,7 @@ async function loadRepos() {
 
     currentRepoPath = repos[0].path;
   } catch(e) {
-    document.getElementById('repoSelect').innerHTML = '<option value="">(Repos loaded)</option>';
+    handleServerDisconnected();
   }
 }
 
@@ -1341,13 +1429,23 @@ async function updateModelAssignment(targetKey, modelId) {
 }
 
 // ─────────────────────────────────────────────────────────────
-// Dynamic Sub-Agent Topology Synchronizer
+// Dynamic Sub-Agent Topology Synchronizer & Disconnection Handler
 // ─────────────────────────────────────────────────────────────
 async function updateTelemetryAndTopology() {
   try {
-    const res = await fetch('/api/metrics', { cache: 'no-store' });
-    const data = await res.json();
+    const controller = new AbortController();
+    const tId = setTimeout(() => controller.abort(), 2000);
+    const res = await fetch('/api/metrics', { cache: 'no-store', signal: controller.signal });
+    clearTimeout(tId);
     
+    if (!res.ok) {
+      handleServerDisconnected();
+      return;
+    }
+
+    const data = await res.json();
+    handleServerConnected();
+
     if (data && data.metrics && data.metrics.gpu) {
       const gpu = data.metrics.gpu;
       const vramGb = (gpu.mem_used / 1024).toFixed(1);
@@ -1360,12 +1458,17 @@ async function updateTelemetryAndTopology() {
     if (data && data.status && data.status.lfm) {
       mVal.innerText = 'LFM 2.5: 8 SLOTS READY';
       mVal.style.color = 'var(--green)';
+    } else {
+      mVal.innerText = 'LFM 2.5: HOST OFFLINE';
+      mVal.style.color = 'var(--orange)';
     }
 
     if (data.topology) {
       renderDynamicTopology(data.topology);
     }
-  } catch(e) {}
+  } catch(e) {
+    handleServerDisconnected();
+  }
 }
 
 function renderDynamicTopology(topo) {
@@ -1439,7 +1542,7 @@ function updateStaticNodeView(id, status, task) {
 
   taskEl.innerText = task || 'Idle';
   badge.innerText = status.toUpperCase();
-  badge.className = `status-badge ${status === 'running' ? 'badge-running' : (status === 'online' || status === 'ready' ? 'badge-online' : 'badge-idle')}`;
+  badge.className = `status-badge ${status === 'running' ? 'badge-running' : (status === 'online' || status === 'ready' ? 'badge-online' : (status === 'offline' ? 'badge-offline' : 'badge-idle'))}`;
 }
 
 function filterLegendCards(val) {
