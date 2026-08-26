@@ -1,6 +1,6 @@
 /**
  * Swarm AI Studio Frontend Controller
- * Multi-Chat, Full GitHub Desktop, Worktree Manager, Grouped Artifacts & Live Debug Logs
+ * Multi-Chat, Full GitHub Desktop, Stash Local Changes & Worktree Manager
  */
 
 let activeSessionId = "";
@@ -17,6 +17,7 @@ let pollInterval = null;
 let debugPollInterval = null;
 let currentModalContent = "";
 let currentModalFilename = "";
+let pendingBranchSwitch = null;
 
 function switchTab(tabId) {
   document.getElementById('tabChatBtn').className = (tabId === 'chat') ? 'tab-btn active' : 'tab-btn';
@@ -76,6 +77,15 @@ async function loadGitHubDesktopState() {
     document.getElementById('ghdBehindCount').innerText = data.behind || 0;
     document.getElementById('ghdChangesCount').innerText = data.changed_files ? data.changed_files.length : 0;
 
+    // Stash quick badge count
+    const stashes = data.stashes || [];
+    const stashBtn = document.getElementById('ghdStashNavBtn');
+    if (stashBtn) {
+      stashBtn.innerText = `📦 Stashes (${stashes.length})`;
+    }
+
+    renderStashBanner(stashes);
+
     allBranches = data.branches || [];
     renderBranchModalList(allBranches, data.branch);
 
@@ -85,6 +95,40 @@ async function loadGitHubDesktopState() {
   } catch(e) {
     console.error("Error loading GitHub Desktop state:", e);
   }
+}
+
+function renderStashBanner(stashes) {
+  const banner = document.getElementById('ghdStashBanner');
+  if (!banner) return;
+
+  if (!stashes || stashes.length === 0) {
+    banner.style.display = 'none';
+    return;
+  }
+
+  // Find most recent stash
+  const latest = stashes[0];
+  banner.style.display = 'flex';
+  banner.innerHTML = `
+    <div class="stash-banner-title">
+      <span>📦 Stashed changes on <b>${escapeHtml(latest.branch)}</b></span>
+      <span style="font-size:11px; color:var(--text-muted);">${escapeHtml(latest.date || '')}</span>
+    </div>
+    <div style="font-family:monospace; font-size:11.5px; color:#cbd5e1; text-overflow:ellipsis; overflow:hidden; white-space:nowrap;">
+      ${escapeHtml(latest.message)}
+    </div>
+    <div style="display:flex; justify-content:flex-end; gap:8px; margin-top:4px;">
+      <button class="action-btn" onclick="popStash(0)" style="background:#1d4ed8; color:#ffffff; border:none; padding:3px 10px; font-size:11.5px;">
+        ↩️ Restore
+      </button>
+      <button class="action-btn danger" onclick="dropStash(0)" style="padding:3px 8px; font-size:11.5px;">
+        🗑️ Discard
+      </button>
+      <button class="action-btn" onclick="openStashesModal()" style="padding:3px 8px; font-size:11.5px;">
+        View All (${stashes.length})
+      </button>
+    </div>
+  `;
 }
 
 function renderChangesList(files) {
@@ -377,7 +421,68 @@ function filterBranches(val) {
   renderBranchModalList(filtered, currentGhdState ? currentGhdState.branch : "");
 }
 
+// ─────────────────────────────────────────────────────────────
+// BRANCH SWITCHING & STASH INTERACTION (GITHUB DESKTOP STYLE)
+// ─────────────────────────────────────────────────────────────
 async function ghdCheckoutBranch(branchName, create) {
+  document.getElementById('branchModal').className = 'branch-modal';
+
+  const cleanName = branchName.trim().replace(/^origin\//, '').replace(/^remotes\/origin\//, '');
+  if (currentGhdState && currentGhdState.branch === cleanName && !create) {
+    return; // Already on this branch
+  }
+
+  // If local uncommitted changes exist, open the Stash & Switch dialog (like GitHub Desktop)
+  if (currentGhdState && currentGhdState.changed_files && currentGhdState.changed_files.length > 0) {
+    pendingBranchSwitch = { branch: cleanName, create: create };
+    openBranchSwitchPrompt(cleanName, currentGhdState.changed_files.length);
+    return;
+  }
+
+  // Otherwise, clean direct checkout
+  await executeDirectBranchCheckout(cleanName, create);
+}
+
+function openBranchSwitchPrompt(targetBranch, changeCount) {
+  document.getElementById('switchTargetBranchName').innerText = targetBranch;
+  document.getElementById('switchChangeCount').innerText = changeCount;
+  document.getElementById('branchSwitchModal').className = 'modal-overlay active';
+}
+
+function closeBranchSwitchModal() {
+  document.getElementById('branchSwitchModal').className = 'modal-overlay';
+  pendingBranchSwitch = null;
+}
+
+async function confirmStashAndSwitch() {
+  if (!pendingBranchSwitch) return;
+  const { branch, create } = pendingBranchSwitch;
+  closeBranchSwitchModal();
+
+  try {
+    const res = await fetch('/api/git/stash_and_switch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ repo_path: currentRepoPath, branch: branch, create: create })
+    });
+    const data = await res.json();
+    await loadGitHubDesktopState();
+    if (data.success) {
+      alert(`✓ Changes stashed on previous branch. Switched to '${branch}'!`);
+    } else {
+      alert(`Stash & Switch failed:\n\n${data.error || data.stderr}`);
+    }
+  } catch(e) { alert("Error: " + e.message); }
+}
+
+async function confirmBringChanges() {
+  if (!pendingBranchSwitch) return;
+  const { branch, create } = pendingBranchSwitch;
+  closeBranchSwitchModal();
+  await executeDirectBranchCheckout(branch, create);
+}
+
+async function executeDirectBranchCheckout(branchName, create) {
   try {
     const res = await fetch('/api/git/branch', {
       method: 'POST',
@@ -385,12 +490,10 @@ async function ghdCheckoutBranch(branchName, create) {
       body: JSON.stringify({ repo_path: currentRepoPath, branch: branchName, create: create })
     });
     const data = await res.json();
-    document.getElementById('branchModal').className = 'branch-modal';
-    
     if (data.success) {
       await loadGitHubDesktopState();
     } else {
-      alert(`⚠️ Branch action failed:\n\n${data.stderr || data.error || 'Unknown error'}\n\nTip: If you have uncommitted changes conflicting with this branch, commit or stash them first.`);
+      alert(`⚠️ Branch switch failed:\n\n${data.stderr || data.error}\n\nTip: You can use 'Stash All Changes' before switching branches.`);
     }
   } catch(e) { alert("Error: " + e.message); }
 }
@@ -404,18 +507,117 @@ async function createAndCheckoutBranch() {
   await ghdCheckoutBranch(input, true);
 }
 
-async function openStashModal() {
-  const msg = prompt("Enter stash message (or leave blank for default):");
-  if (msg !== null) {
+// ─────────────────────────────────────────────────────────────
+// STASH MANAGEMENT (SAVE, POP, DROP, VIEW ALL)
+// ─────────────────────────────────────────────────────────────
+async function quickStash() {
+  const msg = prompt("Enter stash message (or leave blank for automatic timestamped message):");
+  if (msg === null) return; // User cancelled
+
+  try {
+    const res = await fetch('/api/git/stash/save', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ repo_path: currentRepoPath, message: msg })
+    });
+    const data = await res.json();
+    if (data.success) {
+      await loadGitHubDesktopState();
+      alert("✓ Local changes stashed successfully! Working tree is now clean.");
+    } else {
+      alert("Stash error:\n" + (data.stderr || data.error));
+    }
+  } catch(e) { alert("Error: " + e.message); }
+}
+
+async function popStash(index = 0) {
+  try {
+    const res = await fetch('/api/git/stash/pop', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ repo_path: currentRepoPath, index: index })
+    });
+    const data = await res.json();
+    if (data.success) {
+      await loadGitHubDesktopState();
+      alert("✓ Stash restored onto current branch!");
+    } else {
+      alert("Error restoring stash:\n\n" + (data.stderr || data.error));
+    }
+  } catch(e) { alert("Error: " + e.message); }
+}
+
+async function dropStash(index = 0) {
+  if (confirm(`Are you sure you want to discard this stash? This cannot be undone.`)) {
     try {
-      const res = await fetch('/api/git/stash/save', {
+      const res = await fetch('/api/git/stash/drop', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ repo_path: currentRepoPath, message: msg })
+        body: JSON.stringify({ repo_path: currentRepoPath, index: index })
       });
-      await loadGitHubDesktopState();
-      alert("✓ Stash created successfully!");
+      const data = await res.json();
+      if (data.success) {
+        await loadGitHubDesktopState();
+        if (document.getElementById('stashModal').className.includes('active')) {
+          await loadStashesList();
+        }
+      } else {
+        alert("Error dropping stash:\n" + (data.stderr || data.error));
+      }
     } catch(e) { alert("Error: " + e.message); }
+  }
+}
+
+async function openStashesModal() {
+  document.getElementById('stashModal').className = 'modal-overlay active';
+  await loadStashesList();
+}
+
+function closeStashesModal() {
+  document.getElementById('stashModal').className = 'modal-overlay';
+}
+
+async function loadStashesList() {
+  const container = document.getElementById('stashesTableBody');
+  container.innerHTML = '<tr><td colspan="4" style="text-align:center; padding:16px; color:var(--text-muted);">Loading stashes...</td></tr>';
+  
+  try {
+    const res = await fetch(`/api/git/stashes?repo_path=${encodeURIComponent(currentRepoPath)}`, { cache: 'no-store' });
+    const data = await res.json();
+    const stashes = data.stashes || [];
+
+    container.innerHTML = '';
+    if (stashes.length === 0) {
+      container.innerHTML = '<tr><td colspan="4" style="text-align:center; padding:16px; color:var(--text-muted);">No saved stashes found.</td></tr>';
+      return;
+    }
+
+    stashes.forEach(s => {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td style="padding:10px 14px; font-family:monospace; color:#ffffff; font-weight:700;">
+          📦 ${escapeHtml(s.ref)}
+        </td>
+        <td style="padding:10px 14px; font-family:monospace; color:var(--accent);">🌿 ${escapeHtml(s.branch)}</td>
+        <td style="padding:10px 14px; font-family:monospace; color:#cbd5e1; font-size:12px;">
+          ${escapeHtml(s.message)}<br><span style="color:var(--text-muted); font-size:11px;">🕒 ${escapeHtml(s.date)}</span>
+        </td>
+        <td style="padding:10px 14px; text-align:right;">
+          <div style="display:inline-flex; gap:6px;">
+            <button class="action-btn" onclick="popStash(${s.index}); closeStashesModal();" style="background:#1d4ed8; color:#ffffff; border:none;">
+              ↩️ Restore
+            </button>
+            <button class="action-btn danger" onclick="dropStash(${s.index})">
+              🗑️ Discard
+            </button>
+          </div>
+        </td>
+      `;
+      container.appendChild(tr);
+    });
+
+  } catch(e) {
+    container.innerHTML = `<tr><td colspan="4" style="color:var(--rose); padding:16px;">Error loading stashes: ${escapeHtml(e.message)}</td></tr>`;
   }
 }
 

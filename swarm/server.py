@@ -25,6 +25,12 @@ from swarm.git_engine import (
     list_worktrees,
     add_worktree,
     remove_worktree,
+    list_stashes,
+    save_stash,
+    pop_stash,
+    apply_stash,
+    drop_stash,
+    stash_and_switch_branch,
     run_git
 )
 from swarm.sessions import (
@@ -80,7 +86,6 @@ class SwarmHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self):
-        t0 = time.time()
         parsed = urlparse(self.path)
         qs = parse_qs(parsed.query)
 
@@ -138,6 +143,10 @@ class SwarmHandler(BaseHTTPRequestHandler):
             repo_path = qs.get("repo_path", [""])[0]
             self._send_json({"worktrees": list_worktrees(repo_path)})
 
+        elif parsed.path == '/api/git/stashes':
+            repo_path = qs.get("repo_path", [""])[0]
+            self._send_json({"stashes": list_stashes(repo_path)})
+
         # 5. Multi-Chat Sessions
         elif parsed.path == '/api/sessions':
             self._send_json(list_sessions())
@@ -178,7 +187,6 @@ class SwarmHandler(BaseHTTPRequestHandler):
             self.send_error(404, "Not Found")
 
     def do_POST(self):
-        t0 = time.time()
         parsed = urlparse(self.path)
         length = int(self.headers.get('Content-Length', 0))
         body = self.rfile.read(length).decode() if length > 0 else "{}"
@@ -285,14 +293,40 @@ class SwarmHandler(BaseHTTPRequestHandler):
             res = remove_worktree(repo_path, wt_path, force=force)
             self._send_json(res)
 
+        # 4. Stash Endpoints
         elif parsed.path == '/api/git/stash/save':
             repo_path = payload.get("repo_path", "")
             msg = payload.get("message", "")
-            args = ["stash", "push"] + (["-m", msg] if msg else [])
-            res = run_git(repo_path, args)
+            include_untracked = payload.get("include_untracked", True)
+            res = save_stash(repo_path, message=msg, include_untracked=include_untracked)
             self._send_json(res)
 
-        # 4. Model Scouting & Assignment
+        elif parsed.path == '/api/git/stash/pop':
+            repo_path = payload.get("repo_path", "")
+            index = int(payload.get("index", 0))
+            res = pop_stash(repo_path, index=index)
+            self._send_json(res)
+
+        elif parsed.path == '/api/git/stash/apply':
+            repo_path = payload.get("repo_path", "")
+            index = int(payload.get("index", 0))
+            res = apply_stash(repo_path, index=index)
+            self._send_json(res)
+
+        elif parsed.path == '/api/git/stash/drop':
+            repo_path = payload.get("repo_path", "")
+            index = int(payload.get("index", 0))
+            res = drop_stash(repo_path, index=index)
+            self._send_json(res)
+
+        elif parsed.path == '/api/git/stash_and_switch':
+            repo_path = payload.get("repo_path", "")
+            target_branch = payload.get("branch", "")
+            create = payload.get("create", False)
+            res = stash_and_switch_branch(repo_path, target_branch, create=create)
+            self._send_json(res)
+
+        # 5. Model Scouting & Assignment
         elif parsed.path == '/api/models/rescout':
             catalog = scout_all_models(force_refresh=True)
             log_event("info", "model", "Rescouted models for Gemini & Qwen")

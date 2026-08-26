@@ -6,7 +6,7 @@ Provides 100% mouse-driven operations with comprehensive action logging:
 - Ahead/Behind commit synchronization (Fetch, Pull, Push)
 - Unified colored diffs for modified & untracked files
 - Worktrees Manager (List, Create, Remove)
-- Stash Manager (Save, Apply, Pop, Drop)
+- Stash Subsystem (Stash changes, Pop/Restore, Drop, Stash & Switch)
 - History inspection with file breakdown
 """
 
@@ -167,13 +167,8 @@ def get_full_github_desktop_state(repo_path: str) -> Dict[str, Any]:
     # 5. Worktrees
     worktrees = list_worktrees(repo_path)
 
-    # 6. Stashes
-    stash_res = run_git(repo_path, ["stash", "list"])
-    stashes = []
-    if stash_res["success"] and stash_res["stdout"]:
-        for s in stash_res["stdout"].split("\n"):
-            if s.strip():
-                stashes.append(s.strip())
+    # 6. Structured Stashes
+    stashes = list_stashes(repo_path)
 
     return {
         "active": True,
@@ -265,6 +260,124 @@ def switch_or_create_branch(repo_path: str, branch_name: str, create: bool = Fal
     res = run_git(repo_path, ["checkout", clean_name])
     log_event("info" if res["success"] else "warn", "branch", f"Checkout '{clean_name}'", error=res.get("error", ""))
     return res
+
+# ─────────────────────────────────────────────────────────────
+# Complete Stash Subsystem (GitHub Desktop Style)
+# ─────────────────────────────────────────────────────────────
+def list_stashes(repo_path: str) -> List[Dict[str, Any]]:
+    """Lists all stashes with index, message, branch, and relative date."""
+    res = run_git(repo_path, ["stash", "list", "--pretty=format:%gd%x09%cr%x09%gs"])
+    stashes = []
+    
+    if res["success"] and res["stdout"]:
+        for line in res["stdout"].split("\n"):
+            if not line.strip():
+                continue
+            parts = line.split("\t")
+            ref = parts[0].strip() # e.g. stash@{0}
+            date = parts[1].strip() if len(parts) > 1 else ""
+            msg = parts[2].strip() if len(parts) > 2 else ""
+
+            # Extract index
+            idx = 0
+            if "{" in ref and "}" in ref:
+                try:
+                    idx = int(ref.split("{")[1].split("}")[0])
+                except Exception:
+                    pass
+
+            # Extract branch from message (e.g. WIP on main: ...)
+            branch = "main"
+            clean_msg = msg
+            if "WIP on " in msg:
+                branch_part = msg.split("WIP on ")[1].split(":")[0]
+                branch = branch_part.strip()
+            elif "On " in msg:
+                branch_part = msg.split("On ")[1].split(":")[0]
+                branch = branch_part.strip()
+
+            stashes.append({
+                "index": idx,
+                "ref": ref,
+                "branch": branch,
+                "date": date,
+                "message": clean_msg
+            })
+
+    return stashes
+
+def save_stash(repo_path: str, message: str = "", include_untracked: bool = True) -> Dict[str, Any]:
+    """Stashes current changes with optional custom message."""
+    args = ["stash", "push"]
+    if include_untracked:
+        args.append("--include-untracked")
+    
+    if message.strip():
+        args.extend(["-m", message.strip()])
+    
+    res = run_git(repo_path, args)
+    log_event("info" if res["success"] else "warn", "stash", f"Stash changes (message: '{message}')", error=res.get("error", ""))
+    return res
+
+def pop_stash(repo_path: str, index: int = 0) -> Dict[str, Any]:
+    """Restores and removes stash at index."""
+    args = ["stash", "pop", f"stash@{{{index}}}"]
+    res = run_git(repo_path, args)
+    log_event("info" if res["success"] else "warn", "stash", f"Restore / Pop stash@{index}", error=res.get("error", ""))
+    return res
+
+def apply_stash(repo_path: str, index: int = 0) -> Dict[str, Any]:
+    """Applies stash without removing it."""
+    args = ["stash", "apply", f"stash@{{{index}}}"]
+    res = run_git(repo_path, args)
+    log_event("info" if res["success"] else "warn", "stash", f"Apply stash@{index}", error=res.get("error", ""))
+    return res
+
+def drop_stash(repo_path: str, index: int = 0) -> Dict[str, Any]:
+    """Discards / removes stash at index."""
+    args = ["stash", "drop", f"stash@{{{index}}}"]
+    res = run_git(repo_path, args)
+    log_event("info" if res["success"] else "warn", "stash", f"Drop / Discard stash@{index}", error=res.get("error", ""))
+    return res
+
+def stash_and_switch_branch(repo_path: str, target_branch: str, create: bool = False) -> Dict[str, Any]:
+    """
+    Automates GitHub Desktop's 'Stash changes and switch branch':
+    1. Stashes working directory changes on current branch.
+    2. Switches to target branch (or creates it).
+    """
+    current_branch = run_git(repo_path, ["branch", "--show-current"])["stdout"] or "HEAD"
+    timestamp_str = time.strftime('%Y-%m-%d %H:%M:%S')
+    stash_msg = f"Stash on {current_branch} before switching to {target_branch} ({timestamp_str})"
+    
+    # 1. Stash changes
+    stash_res = save_stash(repo_path, message=stash_msg, include_untracked=True)
+    if not stash_res["success"]:
+        return {
+            "success": False,
+            "error": f"Failed to stash changes: {stash_res.get('error', '')}",
+            "stderr": stash_res.get("stderr", "")
+        }
+
+    # 2. Switch branch
+    switch_res = switch_or_create_branch(repo_path, target_branch, create=create)
+    if not switch_res["success"]:
+        # If branch switch failed, try to pop back the stash so user isn't stranded
+        pop_stash(repo_path, 0)
+        return {
+            "success": False,
+            "error": f"Failed to switch to branch '{target_branch}': {switch_res.get('error', '')}. Stash was restored.",
+            "stderr": switch_res.get("stderr", "")
+        }
+
+    log_event("info", "stash", f"Successfully stashed changes on '{current_branch}' and switched to '{target_branch}'")
+    return {
+        "success": True,
+        "stashed": True,
+        "message": f"✓ Changes stashed on '{current_branch}'. Switched to '{target_branch}' successfully.",
+        "previous_branch": current_branch,
+        "target_branch": target_branch
+    }
 
 # ─────────────────────────────────────────────────────────────
 # Complete Worktree Subsystem
