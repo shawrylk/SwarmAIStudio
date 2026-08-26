@@ -1,5 +1,5 @@
 """
-Unit Tests for Task-Aware Dynamic Swarm Planner
+Unit Tests for Task-Aware Dynamic Swarm Planner & Context7 Integration
 """
 
 import unittest
@@ -10,6 +10,11 @@ class TestDynamicSwarmPlanner(unittest.TestCase):
         plan = plan_dynamic_swarm_for_task("Where is the AccountService class located?", has_repo=True)
         self.assertEqual(len(plan), 1)
         self.assertIn("Scout", plan[0]["name"])
+
+    def test_docs_query_scales_to_context7_scout(self):
+        plan = plan_dynamic_swarm_for_task("Show me Context7 documentation and latest API example for FastAPI Depends", has_repo=True)
+        names = [a["name"] for a in plan]
+        self.assertTrue(any("Context7" in n for n in names))
 
     def test_bug_fix_scales_to_4_surgical_agents(self):
         plan = plan_dynamic_swarm_for_task("Fix null reference exception in PaymentEngine", has_repo=True)

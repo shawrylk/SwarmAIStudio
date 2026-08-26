@@ -1,6 +1,7 @@
 """
 Task-Aware Dynamic Swarm Planner & Orchestrator Engine
 Dynamically scales 1 to 8 GPU slots with specialized skills based on task intent.
+Includes Context7 Live Documentation & API Scout for 100% up-to-date knowledge.
 Synthesizes findings via Gemini Lead Advisor and persists Artifacts.
 """
 
@@ -14,15 +15,16 @@ from swarm.model_scout import load_model_assignments
 from swarm.git_engine import extract_deep_repo_context, format_repo_prompt_block
 from swarm.artifacts import save_artifact_to_disk
 from swarm.sessions import save_session_turn
+from swarm.context7_engine import fetch_latest_doc_context, query_context7_library
 
 MODEL_ASSIGNMENTS = load_model_assignments()
 
 SWARM_STATE = {
     "summary": {
-        "total_nodes": 7,
+        "total_nodes": 8,
         "orchestrators": 1,
         "consensus_oracles": 2,
-        "subagent_slots": 4,
+        "subagent_slots": 5,
         "running_now": 0
     },
     "orchestrator": {
@@ -225,52 +227,41 @@ def plan_dynamic_swarm_for_task(message: str, has_repo: bool) -> List[Dict[str, 
             }
         ]
 
-    # 2. Standard Code Review / Diff Check (4 Slots)
-    elif any(k in msg_lower for k in ["review", "audit", "check diff", "inspect code", "quality"]):
+    # 2. Latest Docs / Framework & Knowledge Scout (Context7)
+    elif any(k in msg_lower for k in ["doc", "docs", "documentation", "context7", "latest api", "how to use", "guide", "example", "library", "sdk"]):
         return [
             {
-                "id": "agent_sec",
-                "name": "🛡️ Security Auditor",
-                "skill": "Threat & Exploit Scanner",
-                "role": "Level 3: Vulnerability Scan",
-                "engine": "Local LFM (Slot 1)",
+                "id": "agent_c7_docs",
+                "name": "📚 Context7 Documentation & API Scout",
+                "skill": "Live Version-Accurate Doc & Knowledge Retrieval",
+                "role": "Level 3: Latest Knowledge Grounding",
+                "engine": "Context7 MCP & CLI (ctx7)",
                 "status": "idle",
                 "task": "Idle",
-                "tools": ["injection_scan", "auth_check"],
-                "prompt_template": "Task: Security Auditor. Check code and active diffs for security risks, injection vulnerabilities, and secret leaks."
+                "tools": ["ctx7", "context7_docs", "library_resolve"],
+                "prompt_template": "Task: Context7 Documentation Scout. Retrieve and verify latest API signatures, breaking changes, and modern best practices."
             },
             {
-                "id": "agent_perf",
-                "name": "⚡ Performance Auditor",
-                "skill": "Latency & Memory Hunter",
-                "role": "Level 3: Resource Profiler",
+                "id": "agent_impl",
+                "name": "⚙️ Surgical Code Draftsman",
+                "skill": "Production Patch Synthesis",
+                "role": "Level 3: Code Implementation",
                 "engine": "Local LFM (Slot 2)",
                 "status": "idle",
                 "task": "Idle",
-                "tools": ["n_plus_1", "async_block"],
-                "prompt_template": "Task: Performance Auditor. Check for hot loops, unoptimized allocations, and async locking."
+                "tools": ["replace_content", "write_file"],
+                "prompt_template": "Task: Synthesize working code examples using the version-accurate Context7 documentation."
             },
             {
-                "id": "agent_arch",
-                "name": "📐 Architecture & QA",
-                "skill": "Drift & Regression Gate",
-                "role": "Level 3: Codebase Standards",
+                "id": "agent_qa",
+                "name": "🧪 LSP & Syntax Verifier",
+                "skill": "Diagnostics & Type Safety",
+                "role": "Level 3: Syntax Verification",
                 "engine": "Local LFM (Slot 3)",
                 "status": "idle",
                 "task": "Idle",
-                "tools": ["check_syntax", "contract_gate"],
-                "prompt_template": "Task: Architecture & QA. Audit design patterns, modular coupling, and regression risks."
-            },
-            {
-                "id": "agent_scout",
-                "name": "🔍 Scout Indexer",
-                "skill": "File & Dependency Graph",
-                "role": "Level 3: Structural Context",
-                "engine": "Local LFM (Slot 4)",
-                "status": "idle",
-                "task": "Idle",
-                "tools": ["find_by_name", "gitnexus"],
-                "prompt_template": "Task: Scout Indexer. Map touchpoints and affected manifests."
+                "tools": ["check_syntax", "contract_verify"],
+                "prompt_template": "Task: Verify syntax validity, null safety, and edge-case contracts against latest specs."
             }
         ]
 
@@ -323,7 +314,56 @@ def plan_dynamic_swarm_for_task(message: str, has_repo: bool) -> List[Dict[str, 
             }
         ]
 
-    # 4. Pure File Search / Git Locate (1 Slot)
+    # 4. Standard Code Review / Diff Check (4 Slots)
+    elif any(k in msg_lower for k in ["review", "audit", "check diff", "inspect code", "quality"]):
+        return [
+            {
+                "id": "agent_sec",
+                "name": "🛡️ Security Auditor",
+                "skill": "Threat & Exploit Scanner",
+                "role": "Level 3: Vulnerability Scan",
+                "engine": "Local LFM (Slot 1)",
+                "status": "idle",
+                "task": "Idle",
+                "tools": ["injection_scan", "auth_check"],
+                "prompt_template": "Task: Security Auditor. Check code and active diffs for security risks, injection vulnerabilities, and secret leaks."
+            },
+            {
+                "id": "agent_perf",
+                "name": "⚡ Performance Auditor",
+                "skill": "Latency & Memory Hunter",
+                "role": "Level 3: Resource Profiler",
+                "engine": "Local LFM (Slot 2)",
+                "status": "idle",
+                "task": "Idle",
+                "tools": ["n_plus_1", "async_block"],
+                "prompt_template": "Task: Performance Auditor. Check for hot loops, unoptimized allocations, and async locking."
+            },
+            {
+                "id": "agent_arch",
+                "name": "📐 Architecture & QA",
+                "skill": "Drift & Regression Gate",
+                "role": "Level 3: Codebase Standards",
+                "engine": "Local LFM (Slot 3)",
+                "status": "idle",
+                "task": "Idle",
+                "tools": ["check_syntax", "contract_gate"],
+                "prompt_template": "Task: Architecture & QA. Audit design patterns, modular coupling, and regression risks."
+            },
+            {
+                "id": "agent_scout",
+                "name": "🔍 Scout Indexer",
+                "skill": "File & Dependency Graph",
+                "role": "Level 3: Structural Context",
+                "engine": "Local LFM (Slot 4)",
+                "status": "idle",
+                "task": "Idle",
+                "tools": ["find_by_name", "gitnexus"],
+                "prompt_template": "Task: Scout Indexer. Map touchpoints and affected manifests."
+            }
+        ]
+
+    # 5. Pure File Search / Git Locate (1 Slot)
     elif any(k in msg_lower for k in ["find file", "where is", "locate", "grep", "list files", "scan files"]):
         return [
             {
@@ -339,7 +379,7 @@ def plan_dynamic_swarm_for_task(message: str, has_repo: bool) -> List[Dict[str, 
             }
         ]
 
-    # 5. General Q&A / Architecture Design (3 Slots)
+    # 6. General Q&A / Architecture Design (3 Slots)
     else:
         return [
             {
@@ -379,9 +419,25 @@ def plan_dynamic_swarm_for_task(message: str, has_repo: bool) -> List[Dict[str, 
 
 async def execute_task_aware_swarm(sub_agents: List[Dict[str, Any]], repo_block: str, user_req: str) -> Dict[str, str]:
     tasks = {}
+    
+    c7_docs_context = ""
+    for agent in sub_agents:
+        if agent["id"] == "agent_c7_docs":
+            words = [w for w in user_req.split() if len(w) > 2]
+            target_lib = words[0] if words else "fastapi"
+            for w in words:
+                if w.lower() in ["fastapi", "react", "nextjs", "pydantic", "drizzle", "redis", "langchain", "tailwind", "prisma", "express", "vitest", "pytest", "fastmcp"]:
+                    target_lib = w.lower()
+                    break
+            c7_docs_context = fetch_latest_doc_context(target_lib, user_req)
+
     for agent in sub_agents:
         agent_id = agent["id"]
-        prompt = f"{repo_block}\n\nUser Request: {user_req}\n\n{agent.get('prompt_template', '')}"
+        if agent_id == "agent_c7_docs":
+            prompt = f"{c7_docs_context}\n\nTask: Extract and summarize exact live signatures and usage for: '{user_req}'"
+        else:
+            prompt = f"{repo_block}\n\n{c7_docs_context}\n\nUser Request: {user_req}\n\n{agent.get('prompt_template', '')}"
+
         update_agent_status("sub_agents", agent_id, "running", f"⚡ {agent['name']} ({agent['skill']}) thinking...")
         tasks[agent_id] = query_local_slot(prompt, system=f"You are the {agent['name']} with specialized skill '{agent['skill']}'.")
 
@@ -486,7 +542,7 @@ Your Task:
    - Provide Executive Summary, Critical Security/Regression Risks, Performance/Memory Optimizations, and Concrete Next Steps.
    - Format the entire review as an authoritative Markdown Artifact document.
 3. If this is an IMPLEMENTATION / DESIGN request:
-   - Provide exact file paths, schemas, and production code without fluff.
+   - Provide exact file paths, schemas, and production code grounded in the latest 2026 library versions.
 4. Highlight subtle issues caught across the dynamic sub-agent streams.
 """
 
