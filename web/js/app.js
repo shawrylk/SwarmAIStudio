@@ -1,6 +1,7 @@
 /**
  * Swarm AI Studio Frontend Controller
- * Multi-Chat, Full GitHub Desktop, Stash Local Changes, Worktree Manager, Autonomous Loop Agent, & Offline Detection
+ * Multi-Chat, Full GitHub Desktop, Stash Local Changes, Worktree Manager, Autonomous Loop Agent,
+ * Cost-Based Optimizer (CBO) & SQL Explain DAG, and Auto-Dismissing Toast Notification System.
  */
 
 let isServerConnected = true;
@@ -22,6 +23,61 @@ let currentModalContent = "";
 let currentModalFilename = "";
 let pendingBranchSwitch = null;
 
+// ─────────────────────────────────────────────────────────────
+// TOAST NOTIFICATION SYSTEM (AUTO-DISMISS, NON-INTRUSIVE)
+// ─────────────────────────────────────────────────────────────
+function showToast(message, type = 'info', duration = 3400) {
+  const container = document.getElementById('toastContainer');
+  if (!container) return;
+
+  const toast = document.createElement('div');
+  toast.className = `toast-item ${type}`;
+
+  const iconMap = {
+    success: '✓',
+    error: '⚠️',
+    warn: '⚡',
+    info: 'ℹ️'
+  };
+  const icon = iconMap[type] || 'ℹ️';
+
+  toast.innerHTML = `
+    <span class="toast-icon">${icon}</span>
+    <div class="toast-msg">${escapeHtml(message)}</div>
+    <button class="toast-close" onclick="event.stopPropagation(); dismissToast(this.parentElement)">✕</button>
+    <div class="toast-progress" style="animation-duration: ${duration}ms;"></div>
+  `;
+
+  toast.onclick = () => dismissToast(toast);
+  container.appendChild(toast);
+
+  requestAnimationFrame(() => {
+    toast.classList.add('show');
+  });
+
+  const timer = setTimeout(() => {
+    dismissToast(toast);
+  }, duration);
+
+  toast._dismissTimer = timer;
+}
+
+function dismissToast(toast) {
+  if (!toast || toast._isDismissing) return;
+  toast._isDismissing = true;
+  if (toast._dismissTimer) clearTimeout(toast._dismissTimer);
+  
+  toast.classList.remove('show');
+  toast.classList.add('hide');
+
+  setTimeout(() => {
+    if (toast.parentElement) toast.parentElement.removeChild(toast);
+  }, 260);
+}
+
+// ─────────────────────────────────────────────────────────────
+// SERVER DISCONNECTION & RECOVERY HANDLING
+// ─────────────────────────────────────────────────────────────
 function handleServerDisconnected() {
   consecutiveFailures++;
   isServerConnected = false;
@@ -47,7 +103,6 @@ function handleServerDisconnected() {
     modelEl.style.color = 'var(--rose)';
   }
 
-  // Update Topology Node status
   ['gemini', 'lfm', 'qwen'].forEach(id => {
     updateStaticNodeView(id, 'offline', 'Backend server killed or unreachable');
   });
@@ -76,6 +131,8 @@ function handleServerConnected() {
 
     const dot = document.getElementById('serverStatusDot');
     if (dot) dot.className = 'dot';
+
+    showToast("✓ Connected back to Swarm backend!", "success", 2500);
   }
 }
 
@@ -129,7 +186,7 @@ function parseMarkdown(md) {
 async function startAutonomousLoop() {
   const goal = document.getElementById('loopGoalInput').value.trim();
   if (!goal) {
-    alert("Please enter a goal or feature description for the Autonomous Swarm.");
+    showToast("Please enter a goal or feature description.", "warn");
     return;
   }
 
@@ -141,19 +198,21 @@ async function startAutonomousLoop() {
     });
     const data = await res.json();
     if (data.success) {
+      showToast("🚀 Autonomous Swarm Loop started!", "success");
       pollLoopState();
     } else {
-      alert("Loop Error: " + data.error);
+      showToast("Loop Error: " + data.error, "error", 4500);
     }
   } catch(e) {
     handleServerDisconnected();
-    alert("Error: " + e.message);
+    showToast("Error: " + e.message, "error");
   }
 }
 
 async function pauseAutonomousLoop() {
   try {
     await fetch('/api/loop/pause', { method: 'POST' });
+    showToast("⏸️ Swarm loop paused", "info");
     pollLoopState();
   } catch(e) { handleServerDisconnected(); }
 }
@@ -161,17 +220,17 @@ async function pauseAutonomousLoop() {
 async function resumeAutonomousLoop() {
   try {
     await fetch('/api/loop/resume', { method: 'POST' });
+    showToast("▶️ Swarm loop resumed", "info");
     pollLoopState();
   } catch(e) { handleServerDisconnected(); }
 }
 
 async function stopAutonomousLoop() {
-  if (confirm("Stop the autonomous loop execution?")) {
-    try {
-      await fetch('/api/loop/stop', { method: 'POST' });
-      pollLoopState();
-    } catch(e) { handleServerDisconnected(); }
-  }
+  try {
+    await fetch('/api/loop/stop', { method: 'POST' });
+    showToast("⏹️ Swarm loop stopped", "warn");
+    pollLoopState();
+  } catch(e) { handleServerDisconnected(); }
 }
 
 async function pollLoopState() {
@@ -520,22 +579,21 @@ function renderColoredDiff(rawDiff) {
 
 async function discardSelectedFile() {
   if (!selectedGhdFile) return;
-  if (confirm(`Are you sure you want to discard changes to ${selectedGhdFile}? This cannot be undone.`)) {
-    try {
-      const res = await fetch('/api/git/discard', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ repo_path: currentRepoPath, file: selectedGhdFile })
-      });
-      const data = await res.json();
-      if (data.success) {
-        selectedGhdFile = "";
-        await loadGitHubDesktopState();
-      } else {
-        alert("Discard error:\n" + (data.stderr || data.error));
-      }
-    } catch(e) { alert("Error: " + e.message); }
-  }
+  try {
+    const res = await fetch('/api/git/discard', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ repo_path: currentRepoPath, file: selectedGhdFile })
+    });
+    const data = await res.json();
+    if (data.success) {
+      showToast(`✓ Discarded changes to ${selectedGhdFile}`, "info");
+      selectedGhdFile = "";
+      await loadGitHubDesktopState();
+    } else {
+      showToast("Discard error: " + (data.stderr || data.error), "error", 4500);
+    }
+  } catch(e) { showToast("Error: " + e.message, "error"); }
 }
 
 async function ghdCommit() {
@@ -554,14 +612,15 @@ async function ghdCommit() {
     });
     const data = await res.json();
     if (data.success) {
+      showToast("✓ Committed changes successfully!", "success");
       document.getElementById('commitSummaryInput').value = '';
       document.getElementById('commitDescInput').value = '';
       selectedGhdFile = "";
       await loadGitHubDesktopState();
     } else {
-      alert("Commit error:\n" + (data.stderr || data.error));
+      showToast("Commit error: " + (data.stderr || data.error), "error", 4500);
     }
-  } catch(e) { alert("Error: " + e.message); }
+  } catch(e) { showToast("Error: " + e.message, "error"); }
 }
 
 async function ghdPush() {
@@ -576,9 +635,9 @@ async function ghdPush() {
     const data = await res.json();
     await loadGitHubDesktopState();
     btn.innerText = `⬆️ Push ${currentGhdState ? currentGhdState.ahead : 0}`;
-    if (data.success) alert("✓ Pushed to remote successfully!");
-    else alert("Push details:\n" + (data.stderr || data.stdout || data.error));
-  } catch(e) { alert("Push error: " + e.message); }
+    if (data.success) showToast("✓ Pushed to remote repository!", "success");
+    else showToast("Push failed: " + (data.stderr || data.stdout || data.error), "error", 4500);
+  } catch(e) { showToast("Push error: " + e.message, "error"); }
 }
 
 async function ghdPull() {
@@ -590,9 +649,9 @@ async function ghdPull() {
     });
     const data = await res.json();
     await loadGitHubDesktopState();
-    if (data.success) alert("✓ Pull complete:\n" + (data.stdout || "Already up to date."));
-    else alert("Pull error:\n" + (data.stderr || data.error));
-  } catch(e) { alert("Pull error: " + e.message); }
+    if (data.success) showToast("✓ Pull complete: " + (data.stdout || "Already up to date."), "success");
+    else showToast("Pull failed: " + (data.stderr || data.error), "error", 4500);
+  } catch(e) { showToast("Pull error: " + e.message, "error"); }
 }
 
 async function ghdFetch() {
@@ -603,8 +662,8 @@ async function ghdFetch() {
       body: JSON.stringify({ repo_path: currentRepoPath })
     });
     await loadGitHubDesktopState();
-    alert("✓ Remote repository fetched successfully!");
-  } catch(e) { alert("Fetch error: " + e.message); }
+    showToast("✓ Remote repository fetched successfully!", "success");
+  } catch(e) { showToast("Fetch error: " + e.message, "error"); }
 }
 
 function renderHistoryList(commits) {
@@ -742,11 +801,11 @@ async function confirmStashAndSwitch() {
     const data = await res.json();
     await loadGitHubDesktopState();
     if (data.success) {
-      alert(`✓ Changes stashed on previous branch. Switched to '${branch}'!`);
+      showToast(`✓ Changes stashed! Switched to '${branch}'`, "success");
     } else {
-      alert(`Stash & Switch failed:\n\n${data.error || data.stderr}`);
+      showToast("Stash & Switch failed: " + (data.error || data.stderr), "error", 4500);
     }
-  } catch(e) { alert("Error: " + e.message); }
+  } catch(e) { showToast("Error: " + e.message, "error"); }
 }
 
 async function confirmBringChanges() {
@@ -765,17 +824,18 @@ async function executeDirectBranchCheckout(branchName, create) {
     });
     const data = await res.json();
     if (data.success) {
+      showToast(`✓ Switched to branch '${branchName}'`, "success");
       await loadGitHubDesktopState();
     } else {
-      alert(`⚠️ Branch switch failed:\n\n${data.stderr || data.error}\n\nTip: You can use 'Stash All Changes' before switching branches.`);
+      showToast("Branch switch failed: " + (data.stderr || data.error), "error", 4500);
     }
-  } catch(e) { alert("Error: " + e.message); }
+  } catch(e) { showToast("Error: " + e.message, "error"); }
 }
 
 async function createAndCheckoutBranch() {
   const input = document.getElementById('branchSearchInput').value.trim();
   if (!input) {
-    alert("Please type a new branch name in the search box first.");
+    showToast("Type a branch name in the search box first.", "warn");
     return;
   }
   await ghdCheckoutBranch(input, true);
@@ -797,11 +857,11 @@ async function quickStash() {
     const data = await res.json();
     if (data.success) {
       await loadGitHubDesktopState();
-      alert("✓ Local changes stashed successfully! Working tree is now clean.");
+      showToast("✓ Local changes stashed! Working tree is clean.", "success");
     } else {
-      alert("Stash error:\n" + (data.stderr || data.error));
+      showToast("Stash error: " + (data.stderr || data.error), "error", 4500);
     }
-  } catch(e) { alert("Error: " + e.message); }
+  } catch(e) { showToast("Error: " + e.message, "error"); }
 }
 
 async function popStash(index = 0) {
@@ -814,32 +874,31 @@ async function popStash(index = 0) {
     const data = await res.json();
     if (data.success) {
       await loadGitHubDesktopState();
-      alert("✓ Stash restored onto current branch!");
+      showToast("✓ Stash restored onto current branch!", "success");
     } else {
-      alert("Error restoring stash:\n\n" + (data.stderr || data.error));
+      showToast("Error restoring stash: " + (data.stderr || data.error), "error", 4500);
     }
-  } catch(e) { alert("Error: " + e.message); }
+  } catch(e) { showToast("Error: " + e.message, "error"); }
 }
 
 async function dropStash(index = 0) {
-  if (confirm(`Are you sure you want to discard this stash? This cannot be undone.`)) {
-    try {
-      const res = await fetch('/api/git/stash/drop', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ repo_path: currentRepoPath, index: index })
-      });
-      const data = await res.json();
-      if (data.success) {
-        await loadGitHubDesktopState();
-        if (document.getElementById('stashModal').className.includes('active')) {
-          await loadStashesList();
-        }
-      } else {
-        alert("Error dropping stash:\n" + (data.stderr || data.error));
+  try {
+    const res = await fetch('/api/git/stash/drop', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ repo_path: currentRepoPath, index: index })
+    });
+    const data = await res.json();
+    if (data.success) {
+      showToast("✓ Stash discarded", "info");
+      await loadGitHubDesktopState();
+      if (document.getElementById('stashModal').className.includes('active')) {
+        await loadStashesList();
       }
-    } catch(e) { alert("Error: " + e.message); }
-  }
+    } else {
+      showToast("Error discarding stash: " + (data.stderr || data.error), "error", 4500);
+    }
+  } catch(e) { showToast("Error: " + e.message, "error"); }
 }
 
 async function openStashesModal() {
@@ -965,7 +1024,7 @@ async function addWorktreeFromModal() {
   const isNewBranch = Boolean(newBranchName);
 
   if (!dirPath) {
-    alert("Please specify a directory path for the new worktree.");
+    showToast("Specify a directory path for the worktree.", "warn");
     return;
   }
 
@@ -988,38 +1047,36 @@ async function addWorktreeFromModal() {
       document.getElementById('wtNewBranchInput').value = '';
       await loadWorktreesList();
       await loadGitHubDesktopState();
-      alert("✓ Worktree created successfully!");
+      showToast("✓ Worktree created successfully!", "success");
     } else {
-      alert("Worktree creation failed:\n\n" + (data.stderr || data.error));
+      showToast("Worktree creation failed: " + (data.stderr || data.error), "error", 4500);
     }
-  } catch(e) { alert("Error: " + e.message); }
+  } catch(e) { showToast("Error: " + e.message, "error"); }
 }
 
 async function removeWorktreeAction(wtPath) {
-  if (confirm(`Remove worktree at ${wtPath}?`)) {
-    try {
-      const res = await fetch('/api/git/worktree/remove', {
+  try {
+    const res = await fetch('/api/git/worktree/remove', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ repo_path: currentRepoPath, path: wtPath, force: false })
+    });
+    const data = await res.json();
+    if (data.success) {
+      showToast("✓ Worktree removed", "info");
+      await loadWorktreesList();
+      await loadGitHubDesktopState();
+    } else {
+      const resForce = await fetch('/api/git/worktree/remove', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ repo_path: currentRepoPath, path: wtPath, force: false })
+        body: JSON.stringify({ repo_path: currentRepoPath, path: wtPath, force: true })
       });
-      const data = await res.json();
-      if (data.success) {
-        await loadWorktreesList();
-        await loadGitHubDesktopState();
-      } else {
-        if (confirm(`Worktree removal failed:\n${data.stderr}\n\nForce remove?`)) {
-          await fetch('/api/git/worktree/remove', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ repo_path: currentRepoPath, path: wtPath, force: true })
-          });
-          await loadWorktreesList();
-          await loadGitHubDesktopState();
-        }
-      }
-    } catch(e) { alert("Error: " + e.message); }
-  }
+      await loadWorktreesList();
+      await loadGitHubDesktopState();
+      showToast("✓ Force removed worktree", "info");
+    }
+  } catch(e) { showToast("Error: " + e.message, "error"); }
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -1073,15 +1130,14 @@ async function switchSession(id) {
 }
 
 async function deleteSession(id) {
-  if (confirm("Delete this chat session?")) {
-    await fetch('/api/sessions/delete', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id: id })
-    });
-    if (activeSessionId === id) activeSessionId = "";
-    await loadSessionsList();
-  }
+  await fetch('/api/sessions/delete', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id: id })
+  });
+  if (activeSessionId === id) activeSessionId = "";
+  showToast("Chat session deleted", "info");
+  await loadSessionsList();
 }
 
 async function confirmClearCurrentSession() {
@@ -1268,7 +1324,7 @@ async function openRemoteArtifact(filepath, filename) {
     
     document.getElementById('modalCopyBtn').onclick = () => {
       navigator.clipboard.writeText(currentModalContent);
-      alert("✓ Document copied to clipboard!");
+      showToast("✓ Document copied to clipboard!", "success");
     };
     document.getElementById('modalDownloadBtn').onclick = () => {
       downloadBlob(currentModalContent, currentModalFilename);
@@ -1276,7 +1332,7 @@ async function openRemoteArtifact(filepath, filename) {
 
     document.getElementById('artifactModal').className = 'modal-overlay active';
   } catch(e) {
-    alert("Error reading remote document: " + e.message);
+    showToast("Error reading remote document: " + e.message, "error");
   }
 }
 
@@ -1290,7 +1346,7 @@ async function downloadArtifactFile(filepath, filename) {
     const data = await res.json();
     downloadBlob(data.content || "", filename);
   } catch(e) {
-    alert("Error downloading file: " + e.message);
+    showToast("Error downloading file: " + e.message, "error");
   }
 }
 
@@ -1304,6 +1360,7 @@ function downloadBlob(text, filename) {
   a.click();
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
+  showToast(`⬇️ Downloaded ${filename}`, "info");
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -1345,6 +1402,7 @@ async function fetchLiveDebugLogs() {
 
 async function clearDebugLogs() {
   document.getElementById('debugLogList').innerHTML = '<div style="color:var(--text-muted); padding:10px;">Logs cleared in viewer.</div>';
+  showToast("Debug logs cleared in viewer", "info");
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -1417,9 +1475,11 @@ async function rescoutModels() {
     await fetch('/api/models/rescout', { method: 'POST' });
     await loadModelCatalogAndAssignments();
     btn.innerText = '✓ Scouted!';
+    showToast("✓ Model catalog refreshed!", "success");
     setTimeout(() => { btn.innerText = '🔄 Rescout Models'; }, 1500);
   } catch(e) {
     btn.innerText = 'Error';
+    showToast("Model rescout failed", "error");
   }
 }
 
@@ -1429,6 +1489,7 @@ async function updateModelAssignment(targetKey, modelId) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ target: targetKey, model_id: modelId })
   });
+  showToast(`Updated model: ${targetKey} ➔ ${modelId}`, "info");
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -1582,6 +1643,7 @@ function onRepoChanged() {
   loadGitHubDesktopState();
   loadArtifactsVault();
   pollLoopState();
+  showToast(`Switched repository: ${sel.options[sel.selectedIndex]?.text || ''}`, "info", 2000);
 }
 
 const promptEl = document.getElementById('promptInput');
@@ -1629,7 +1691,7 @@ async function pasteFromClipboard() {
       autoResize(document.getElementById('promptInput'));
     }
   } catch(e) {
-    alert("Use Ctrl+V to paste.");
+    showToast("Use Ctrl+V to paste into input.", "info");
   }
 }
 
@@ -1744,7 +1806,6 @@ function renderCboPlanHtml(plan, msgId) {
 
   const nodesHtml = (plan.nodes || []).map((n, i) => {
     const opClass = opClassMap[n.operator] || 'op-index';
-    const depsText = (n.dependencies && n.dependencies.length > 0) ? `↳ Depends on: ${n.dependencies.join(', ')}` : `[Root]`;
     return `
       <div class="cbo-dag-node">
         <div style="display:flex; align-items:center; gap:8px;">
@@ -1796,7 +1857,7 @@ function toggleCboPlan(pId) {
 
 function copyArtifact(content) {
   navigator.clipboard.writeText(content);
-  alert("✓ Artifact copied to clipboard!");
+  showToast("✓ Artifact copied to clipboard!", "success");
 }
 
 function escapeHtml(str) {
