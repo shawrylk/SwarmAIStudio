@@ -394,12 +394,29 @@
                 <span>📚 Swarm Skill & Dynamic Role Catalog</span>
                 <span style="font-size:11.5px; background:rgba(56,189,248,0.2); color:var(--accent); border:1px solid var(--accent); padding:2px 8px; border-radius:12px; font-weight:800;">CAPACITY MATRIX</span>
               </div>
-              <div style="font-size:12.5px; color:#cbd5e1; margin-top:2px;">Complete roster of specialized skills and sub-agent roles dynamically assigned across the 8 continuous batching GPU slots.</div>
+              <div style="font-size:12.5px; color:#cbd5e1; margin-top:2px;">Complete live roster of specialized skills and sub-agent roles dynamically assigned across the 8 continuous batching GPU slots.</div>
             </div>
             <div style="display:flex; gap:10px; align-items:center;">
-              <input class="git-input" id="legendFilterInput" placeholder="🔍 Filter skills (e.g. security, async, db)..." oninput="filterLegendCards(this.value)" style="width:260px; font-size:12px;">
-              <div class="node-count-badge" style="background:#1e293b; color:var(--accent); white-space:nowrap;">⚡ 12 Specialized Roles</div>
+              <input class="git-input" id="legendFilterInput" placeholder="🔍 Filter skills (e.g. security, react, git, db)..." oninput="filterLegendCards(this.value)" style="width:280px; font-size:12px;">
+              <div class="node-count-badge" id="skillsTotalCountBadge" style="background:#1e293b; color:var(--accent); white-space:nowrap;">⚡ 50+ Live Skills</div>
             </div>
+          </div>
+
+          <!-- Category Filter Tabs -->
+          <div class="quick-actions" id="skillCategoryPills">
+            <button class="action-btn active" onclick="filterSkillsByCategory('all')">All Skills (All)</button>
+            <button class="action-btn" onclick="filterSkillsByCategory('Security & Audit')">🛡️ Security & Audit</button>
+            <button class="action-btn" onclick="filterSkillsByCategory('Performance & Architecture')">⚡ Performance & DB</button>
+            <button class="action-btn" onclick="filterSkillsByCategory('Frontend & UX')">🎨 Frontend & UI/UX</button>
+            <button class="action-btn" onclick="filterSkillsByCategory('Testing & QA')">🧪 Testing & QA</button>
+            <button class="action-btn" onclick="filterSkillsByCategory('Docs & Knowledge')">📚 Docs & Context7</button>
+            <button class="action-btn" onclick="filterSkillsByCategory('Git & CI/CD')">🌿 Git & CI/CD</button>
+            <button class="action-btn" onclick="filterSkillsByCategory('Core & Reasoning')">💡 Core & Solution</button>
+          </div>
+
+          <!-- Dynamic Skills Grid Container -->
+          <div id="dynamicSkillsCatalogContainer" style="display:grid; grid-template-columns:repeat(auto-fill, minmax(320px, 1fr)); gap:14px; width:100%;">
+            <!-- Populated dynamically via GET /api/skills/catalog -->
           </div>
         </div>
 
@@ -412,9 +429,13 @@
         <div style="display:flex; justify-content:space-between; align-items:center; background:#0f172a; border:2px solid #334155; border-radius:10px; padding:12px 20px;">
           <div>
             <div style="font-weight:800; color:#ffffff; font-size:15px;">📁 Remote Artifact Vault & Report Browser</div>
-            <div style="font-size:12.5px; color:#cbd5e1;">All reports and blueprints are automatically grouped and categorized by Repository.</div>
+            <div style="font-size:12.5px; color:#cbd5e1;">All reports, blueprints, and architecture deliverables filtered by repository.</div>
           </div>
-          <button class="action-btn" onclick="loadArtifactsVault()" style="border-color:var(--accent); color:var(--accent); font-weight:700;">🔄 Refresh Vault</button>
+          <div style="display:flex; gap:8px; align-items:center;">
+            <button class="action-btn" id="vaultFilterSelectedBtn" onclick="toggleArtifactsFilter('selected')" style="background:#1d4ed8; color:#ffffff; font-weight:700;">📁 Current Repo Only</button>
+            <button class="action-btn" id="vaultFilterAllBtn" onclick="toggleArtifactsFilter('all')">🌐 All Repositories</button>
+            <button class="action-btn" onclick="loadArtifactsVault()" style="border-color:var(--accent); color:var(--accent); font-weight:700;">🔄 Refresh</button>
+          </div>
         </div>
 
         <div id="groupedArtifactsContainer">

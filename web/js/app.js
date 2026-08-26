@@ -1125,8 +1125,21 @@ async function startNewChat() {
 }
 
 async function switchSession(id) {
+  if (activeSessionId === id) return;
   activeSessionId = id;
-  await loadSessionsList();
+  
+  // Instant visual feedback on sidebar
+  const items = document.querySelectorAll('.session-item');
+  items.forEach(i => {
+    if (i.innerHTML.includes(`deleteSession('${id}')`)) {
+      i.className = 'session-item active';
+    } else {
+      i.className = 'session-item';
+    }
+  });
+
+  await loadActiveSessionMessages();
+  showToast("Switched chat session", "info", 1500);
 }
 
 async function deleteSession(id) {
@@ -1232,8 +1245,23 @@ async function loadActiveSessionMessages() {
 }
 
 // ─────────────────────────────────────────────────────────────
-// GROUPED ARTIFACTS VAULT
+// GROUPED ARTIFACTS VAULT (FILTERED BY SELECTED REPO)
 // ─────────────────────────────────────────────────────────────
+let vaultFilterMode = 'selected'; // 'selected' or 'all'
+
+function toggleArtifactsFilter(mode) {
+  vaultFilterMode = mode;
+  const selBtn = document.getElementById('vaultFilterSelectedBtn');
+  const allBtn = document.getElementById('vaultFilterAllBtn');
+  if (selBtn && allBtn) {
+    selBtn.style.background = (mode === 'selected') ? '#1d4ed8' : '#1e293b';
+    selBtn.style.color = (mode === 'selected') ? '#ffffff' : 'var(--text)';
+    allBtn.style.background = (mode === 'all') ? '#1d4ed8' : '#1e293b';
+    allBtn.style.color = (mode === 'all') ? '#ffffff' : 'var(--text)';
+  }
+  loadArtifactsVault();
+}
+
 async function loadArtifactsVault() {
   try {
     const res = await fetch(`/api/artifacts?repo_path=${encodeURIComponent(currentRepoPath)}`, { cache: 'no-store' });
@@ -1241,15 +1269,33 @@ async function loadArtifactsVault() {
     const container = document.getElementById('groupedArtifactsContainer');
     container.innerHTML = '';
 
-    const groups = data.groups || [];
+    let groups = data.groups || [];
+    const selRepoName = data.selected_repo || (currentRepoPath ? currentRepoPath.split('/').pop() : '');
+
+    const selBtn = document.getElementById('vaultFilterSelectedBtn');
+    if (selBtn && selRepoName) {
+      selBtn.innerText = `📁 Current Repo (${selRepoName})`;
+    }
+
+    if (vaultFilterMode === 'selected' && selRepoName) {
+      groups = groups.filter(g => g.is_selected || g.repo_name.toLowerCase() === selRepoName.toLowerCase());
+    }
+
     if (groups.length === 0) {
-      container.innerHTML = '<div style="text-align:center; color:var(--text-muted); padding:30px;">No artifacts generated yet.</div>';
+      container.innerHTML = `
+        <div style="text-align:center; color:var(--text-muted); padding:36px; background:#0b1120; border:1px solid #1e293b; border-radius:10px;">
+          <div style="font-size:15px; font-weight:700; color:#ffffff; margin-bottom:6px;">No artifacts found for ${vaultFilterMode === 'selected' ? 'current repository (' + (selRepoName || 'Selected') + ')' : 'any repository'}</div>
+          <div style="font-size:12.5px; margin-bottom:14px;">Generate an audit, implementation plan, or autonomous feature to produce markdown deliverables.</div>
+          <button class="action-btn" onclick="toggleArtifactsFilter('all')">🌐 View All Repositories</button>
+        </div>
+      `;
       return;
     }
 
     groups.forEach(grp => {
       const card = document.createElement('div');
       card.className = 'repo-artifact-group';
+      const isCurrentRepo = grp.is_selected || (selRepoName && grp.repo_name.toLowerCase() === selRepoName.toLowerCase());
 
       let rowsHtml = '';
       grp.artifacts.forEach(art => {
@@ -1271,10 +1317,11 @@ async function loadArtifactsVault() {
       });
 
       card.innerHTML = `
-        <div class="repo-group-header" onclick="toggleArtifactGroup('${escapeJs(grp.repo_name)}')">
+        <div class="repo-group-header" onclick="toggleArtifactGroup('${escapeJs(grp.repo_name)}')" style="${isCurrentRepo ? 'border-left: 4px solid var(--accent); background:#111c33;' : ''}">
           <div class="repo-group-title">
             <span>📁 Repository: <b>${escapeHtml(grp.repo_name)}</b></span>
-            <span class="file-status-badge status-a">${grp.count} Document${grp.count === 1 ? '' : 's'}</span>
+            ${isCurrentRepo ? '<span class="file-status-badge status-a">ACTIVE REPO</span>' : ''}
+            <span class="file-status-badge status-u">${grp.count} Document${grp.count === 1 ? '' : 's'}</span>
           </div>
           <span id="group-icon-${escapeJs(grp.repo_name)}" style="color:var(--accent); font-weight:800;">▾</span>
         </div>
@@ -1299,6 +1346,90 @@ async function loadArtifactsVault() {
     });
 
   } catch(e) { handleServerDisconnected(); }
+}
+
+// ─────────────────────────────────────────────────────────────
+// DYNAMIC 50+ INSTALLED SKILLS & CAPACITY CATALOG
+// ─────────────────────────────────────────────────────────────
+let allInstalledSkills = [];
+let activeSkillCategory = 'all';
+
+async function loadSkillsCatalog() {
+  try {
+    const res = await fetch('/api/skills/catalog', { cache: 'no-store' });
+    const data = await res.json();
+    allInstalledSkills = data.skills || [];
+    
+    const countBadge = document.getElementById('skillsTotalCountBadge');
+    if (countBadge) {
+      countBadge.innerText = `⚡ ${allInstalledSkills.length} Live Skills`;
+    }
+    renderSkillsGrid(allInstalledSkills);
+  } catch(e) {}
+}
+
+function filterSkillsByCategory(cat) {
+  activeSkillCategory = cat;
+  
+  const pills = document.querySelectorAll('#skillCategoryPills .action-btn');
+  pills.forEach(p => {
+    if ((cat === 'all' && p.innerText.includes('All')) || p.innerText.includes(cat)) {
+      p.className = 'action-btn active';
+      p.style.background = '#1e293b';
+      p.style.color = 'var(--accent)';
+      p.style.borderColor = 'var(--accent)';
+    } else {
+      p.className = 'action-btn';
+      p.style.background = '#0f172a';
+      p.style.color = 'var(--text-muted)';
+      p.style.borderColor = '#334155';
+    }
+  });
+
+  applySkillsFilter();
+}
+
+function filterLegendCards(query) {
+  applySkillsFilter(query);
+}
+
+function applySkillsFilter(searchQuery = "") {
+  const q = (searchQuery || document.getElementById('legendFilterInput')?.value || '').toLowerCase().trim();
+  const filtered = allInstalledSkills.filter(s => {
+    const matchesCat = (activeSkillCategory === 'all' || s.category === activeSkillCategory);
+    const text = (s.name + ' ' + s.description + ' ' + s.role + ' ' + s.category + ' ' + (s.tools || []).join(' ')).toLowerCase();
+    const matchesQuery = (!q || text.includes(q));
+    return matchesCat && matchesQuery;
+  });
+  renderSkillsGrid(filtered);
+}
+
+function renderSkillsGrid(skills) {
+  const container = document.getElementById('dynamicSkillsCatalogContainer');
+  if (!container) return;
+  container.innerHTML = '';
+
+  if (skills.length === 0) {
+    container.innerHTML = '<div style="color:var(--text-muted); padding:24px; text-align:center; grid-column:1/-1;">No matching skills found for this category or filter.</div>';
+    return;
+  }
+
+  skills.forEach(s => {
+    const card = document.createElement('div');
+    card.className = 'legend-card';
+    const toolsHtml = (s.tools || []).map(t => `<span class="tool-tag">${escapeHtml(t)}</span>`).join(' ');
+    
+    card.innerHTML = `
+      <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:8px;">
+        <span style="font-weight:800; color:#ffffff; font-size:13.5px;">${escapeHtml(s.name)}</span>
+        <span class="file-status-badge status-u" style="font-size:10px; white-space:nowrap;">${escapeHtml(s.category)}</span>
+      </div>
+      <div style="font-size:12px; color:var(--accent); font-weight:700;">${escapeHtml(s.role)}</div>
+      <div style="font-size:12px; color:#cbd5e1; line-height:1.45; flex:1;">${escapeHtml(s.description)}</div>
+      <div style="display:flex; flex-wrap:wrap; gap:4px; margin-top:6px;">${toolsHtml}</div>
+    `;
+    container.appendChild(card);
+  });
 }
 
 function toggleArtifactGroup(groupName) {
@@ -1631,6 +1762,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   await loadRepos();
   await loadSessionsList();
   await loadModelCatalogAndAssignments();
+  await loadSkillsCatalog();
   updateTelemetryAndTopology();
   setPollingSpeed(false);
 });

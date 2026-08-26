@@ -101,17 +101,22 @@ def scan_all_artifacts(repo_path: str = "") -> Dict[str, Any]:
                     except Exception:
                         pass
 
-    # Format into sorted group list
+    selected_repo_name = Path(repo_path).name if repo_path else ""
+
+    # Format into sorted group list (selected repo placed first)
     groups_list = []
     for r_name, items in groups_dict.items():
         items.sort(key=lambda x: x["modified"], reverse=True)
+        is_sel = (r_name.lower() == selected_repo_name.lower()) if selected_repo_name else False
         groups_list.append({
             "repo_name": r_name,
+            "is_selected": is_sel,
             "count": len(items),
             "artifacts": items
         })
 
-    groups_list.sort(key=lambda g: g["repo_name"])
+    # Sort so selected repo is first, followed alphabetically
+    groups_list.sort(key=lambda g: (not g["is_selected"], g["repo_name"]))
     
     # Flattened list for backward compatibility
     flat_list = []
@@ -119,6 +124,7 @@ def scan_all_artifacts(repo_path: str = "") -> Dict[str, Any]:
         flat_list.extend(g["artifacts"])
 
     return {
+        "selected_repo": selected_repo_name,
         "groups": groups_list,
         "flat": flat_list,
         "total_count": len(flat_list)

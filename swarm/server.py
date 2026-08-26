@@ -58,6 +58,7 @@ from swarm.loop_engine import (
 )
 from swarm.context7_engine import query_context7_library, query_context7_docs, fetch_latest_doc_context
 from swarm.planner_cbo import optimize_and_select_best_plan, execute_plan_dag
+from swarm.skills_scanner import scan_all_installed_skills
 
 MODEL_ASSIGNMENTS = load_model_assignments()
 
@@ -197,6 +198,13 @@ class SwarmHandler(BaseHTTPRequestHandler):
 
         elif parsed.path == '/api/models/assignments':
             self._send_json(MODEL_ASSIGNMENTS)
+
+        # 9. Dynamic Skills & Capacity Catalog (50+ Skills)
+        elif parsed.path == '/api/skills/catalog':
+            self._send_json({
+                "skills": scan_all_installed_skills(),
+                "total_count": len(scan_all_installed_skills())
+            })
 
         else:
             self.send_error(404, "Not Found")
