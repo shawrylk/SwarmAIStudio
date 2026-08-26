@@ -1324,7 +1324,22 @@ def _python_tests_need_pytest(test_files: List[Path]) -> bool:
 # the code under review is wrong. Feeding these back to the dev agent as "MUST FIX"
 # diagnostics is what turned it into a `pip install pytest` bot that never wrote a
 # single line of the actual feature.
+# Compiler / test-assertion diagnostics: proof the deliverable itself is broken.
+CODE_FAILURE_RE = re.compile(
+    r"\berror\s+CS\d{4}\b"          # C# compiler
+    r"|\berror\[E\d{4}\]"            # rustc
+    r"|\bTS\d{4,5}\b"                 # TypeScript
+    r"|\bAssertionError\b"
+    r"|\bSyntaxError\b"
+    r"|\bIndentationError\b"
+    r"|^\s*FAILED\s+\S+::"            # pytest
+    r"|\bFAIL\b.*\bexpected\b",
+    re.IGNORECASE | re.MULTILINE,
+)
+
 INFRA_FAILURE_PATTERNS = (
+    "msb1011",
+    "msb1003",
     "modulenotfounderror",
     "no module named",
     "importerror: failed to import test module",
@@ -1446,6 +1461,15 @@ def classify_test_failure(test_result: Dict[str, Any]) -> Dict[str, Any]:
         return test_result
 
     blob = (test_result.get("output") or "").lower()
+
+    # Compiler and assertion diagnostics are unambiguous evidence that the CODE is
+    # wrong, and must win over any incidental environment-looking substring in the
+    # same output. Real `dotnet test` output carries both.
+    if CODE_FAILURE_RE.search(test_result.get("output") or ""):
+        test_result["failure_kind"] = "code"
+        test_result["infra_reason"] = ""
+        return test_result
+
     for pat in INFRA_FAILURE_PATTERNS:
         if pat in blob:
             test_result["failure_kind"] = "infra"
@@ -1455,6 +1479,26 @@ def classify_test_failure(test_result: Dict[str, Any]) -> Dict[str, Any]:
     test_result["failure_kind"] = "code"
     test_result["infra_reason"] = ""
     return test_result
+
+
+def _select_dotnet_target(p: Path) -> Optional[str]:
+    """Pick the file to hand `dotnet test`, or None if this is not a .NET repo.
+
+    Prefers a solution (it covers every test project); falls back to a single
+    project file. Returns a name relative to the repo, since the command runs
+    with cwd set to the repo root.
+    """
+    slns = sorted(p.glob("*.sln")) + sorted(p.glob("*.slnx"))
+    if slns:
+        # A solution named after its directory wins over an incidental one.
+        preferred = next((f for f in slns if f.stem.lower() == p.name.lower()), slns[0])
+        return preferred.name
+    projs = sorted(p.glob("*.csproj")) + sorted(p.glob("*.fsproj")) + sorted(p.glob("*.vbproj"))
+    if len(projs) == 1:
+        return projs[0].name
+    if projs:
+        return projs[0].name
+    return None
 
 
 def resolve_default_branch(repo_path: str) -> str:
@@ -1510,9 +1554,12 @@ def detect_project_test_runner(repo_path: str) -> Optional[Dict[str, Any]]:
             return {"runner": tool, "command": command, "name": name}
         return {"runner": tool, "command": command, "name": name, "missing_dependency": tool}
 
-    # 1a. .NET Detection
-    if any(p.glob("*.sln")) or any(p.glob("*.csproj")):
-        return _manifest_runner("dotnet test", "dotnet", ["dotnet", "test"])
+    # 1a. .NET Detection. `dotnet test` with no argument fails MSB1011 when the
+    # folder holds more than one project/solution file — DeltaProject has both a
+    # .sln and a stray .csproj — so always name the target explicitly.
+    dotnet_target = _select_dotnet_target(p)
+    if dotnet_target:
+        return _manifest_runner("dotnet test", "dotnet", ["dotnet", "test", dotnet_target])
 
     # 1b. Rust Detection
     if (p / "Cargo.toml").exists():

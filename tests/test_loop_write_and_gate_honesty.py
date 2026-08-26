@@ -304,3 +304,57 @@ class TestMissingToolchainIsNotASilentPass(unittest.TestCase):
             self.assertFalse(res["success"])
             self.assertFalse(res["skipped"])
             self.assertEqual(res["failure_kind"], "infra")
+
+
+class TestDotnetTargetSelection(unittest.TestCase):
+    def test_explicit_target_when_folder_has_sln_and_stray_csproj(self):
+        """Bare `dotnet test` fails MSB1011 here — DeltaProject has both files."""
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "DeltaProject"
+            p.mkdir()
+            (p / "DeltaProject.sln").write_text("solution")
+            (p / "DeltaProject.Tools.csproj").write_text("<Project/>")
+            runner = detect_project_test_runner(str(p))
+            self.assertEqual(runner["command"], ["dotnet", "test", "DeltaProject.sln"])
+
+    def test_solution_named_after_directory_is_preferred(self):
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "MyApp"
+            p.mkdir()
+            (p / "Aaa.Other.sln").write_text("s")
+            (p / "MyApp.sln").write_text("s")
+            runner = detect_project_test_runner(str(p))
+            self.assertEqual(runner["command"][-1], "MyApp.sln")
+
+    def test_single_csproj_without_solution_is_targeted(self):
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td)
+            (p / "Only.csproj").write_text("<Project/>")
+            runner = detect_project_test_runner(str(p))
+            self.assertEqual(runner["command"], ["dotnet", "test", "Only.csproj"])
+
+
+class TestCodeSignalsBeatInfraPatterns(unittest.TestCase):
+    def test_csharp_compile_errors_are_code_failures(self):
+        """These must reach the dev agent; classifying them infra would withhold them."""
+        res = classify_test_failure({
+            "success": False, "skipped": False, "exit_code": 1,
+            "output": "src/X.cs(6,15): error CS0101: The namespace already contains a definition\n"
+                      "src/Y.cs(20,19): error CS0246: The type or namespace name could not be found",
+        })
+        self.assertEqual(res["failure_kind"], "code")
+
+    def test_msbuild_target_ambiguity_is_infra(self):
+        res = classify_test_failure({
+            "success": False, "skipped": False, "exit_code": 1,
+            "output": "MSBUILD : error MSB1011: Specify which project or solution file to use",
+        })
+        self.assertEqual(res["failure_kind"], "infra")
+
+    def test_compile_error_wins_over_incidental_infra_substring(self):
+        res = classify_test_failure({
+            "success": False, "skipped": False, "exit_code": 1,
+            "output": "warning: no such file or directory: stale.cs\n"
+                      "src/X.cs(1,1): error CS1002: ; expected",
+        })
+        self.assertEqual(res["failure_kind"], "code")

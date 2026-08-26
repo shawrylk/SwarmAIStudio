@@ -1195,11 +1195,33 @@ async def _async_loop_runner():
                 resolved = resolve_default_branch(repo_path)
                 log_loop_activity(
                     f"🌿 Current branch '{base_branch or '(none)'}' is a swarm branch or unset — "
-                    f"using default branch '{resolved}' as the integration target.",
+                    f"switching to default branch '{resolved}' as the integration target.",
                     category="git",
                 )
+                sw = switch_or_create_branch(repo_path, resolved, create=False)
+                landed = run_git(repo_path, ["branch", "--show-current"]).get("stdout", "").strip()
+                if not sw.get("success") or landed != resolved:
+                    # Never record a target branch we did not actually reach: the
+                    # final merge would target a branch HEAD is not on. A dirty
+                    # working tree is the usual cause, so say so and stop rather
+                    # than silently building on the wrong lineage.
+                    dirty = run_git(repo_path, ["status", "--porcelain"]).get("stdout", "").strip()
+                    reason = (
+                        "the working tree has uncommitted changes"
+                        if dirty else (sw.get("error") or "checkout failed")
+                    )
+                    msg = (
+                        f"⛔ Cannot switch from '{base_branch or '(none)'}' to default branch "
+                        f"'{resolved}' — {reason}. HEAD is still '{landed or 'unknown'}'. "
+                        f"Refusing to run: commit or stash your changes first, so the swarm "
+                        f"does not branch from or merge into a leftover swarm branch."
+                    )
+                    log_loop_activity(msg, category="git")
+                    LOOP_STATE["status"] = "failed"
+                    LOOP_STATE["final_summary"] = msg
+                    persist_active_loop_state()
+                    return
                 base_branch = resolved
-                switch_or_create_branch(repo_path, base_branch, create=False)
             LOOP_STATE["target_branch"] = base_branch
             
             sess_id_short = LOOP_STATE["session_id"].replace("loop_", "")[:10]
