@@ -107,7 +107,7 @@ class TestLoopEngine(unittest.TestCase):
             }
 
             slot_call_count = 0
-            async def mock_local_slot(prompt, system=""):
+            async def mock_local_slot(prompt, system="", **kwargs):
                 nonlocal slot_call_count
                 slot_call_count += 1
                 prompt_u = prompt.upper()
@@ -202,7 +202,7 @@ if __name__ == "__main__":
     unittest.main()
 ```
 """
-                async def mock_slot(prompt, system=""):
+                async def mock_slot(prompt, system="", **kwargs):
                     pu = prompt.upper()
                     if "SURGICAL CODE DRAFTSMAN" in pu:
                         return dev_code_output
@@ -303,7 +303,7 @@ if __name__ == "__main__":
     unittest.main()
 ```
 """
-                async def mock_slot(prompt, system=""):
+                async def mock_slot(prompt, system="", **kwargs):
                     pu = prompt.upper()
                     if "SURGICAL CODE DRAFTSMAN" in pu:
                         return dev_code
@@ -360,7 +360,7 @@ if __name__ == "__main__":
                 }
 
                 dev_attempt_count = 0
-                async def mock_slot(prompt, system=""):
+                async def mock_slot(prompt, system="", **kwargs):
                     nonlocal dev_attempt_count
                     pu = prompt.upper()
                     if "SURGICAL CODE DRAFTSMAN" in pu:
@@ -464,7 +464,7 @@ if __name__ == "__main__":
             active_during_audit = []
             audit_start_times = {}
 
-            async def mock_local_slot(prompt, system=""):
+            async def mock_local_slot(prompt, system="", **kwargs):
                 pu = prompt.upper()
                 if "SURGICAL CODE DRAFTSMAN" in pu:
                     return "def auth(): return True"

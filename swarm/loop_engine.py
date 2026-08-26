@@ -565,7 +565,13 @@ You get exactly ONE response and CANNOT run tools interactively. Therefore:
 - Equivalent accepted formats if you don't emit tool-calls: a fenced block ```lang path/to/file.ext``` with full content, or a JSON array [{{"path": "...", "content": "..."}}].
 Every file you name MUST include its full, production-grade content (Clean Architecture: functions ≤30 lines, typed signatures, error handling). Always include the unit test file. Emit writes NOW — do not describe, do not ask, do not read.
 """
-        dev_output = await query_local_slot(dev_prompt, system="You are the Surgical Code Draftsman. You have ONE turn and no interactive tools. Emit complete write() calls for every file — never read_file or terminal.")
+        # Code generation needs a large budget — files get truncated mid-write at the
+        # default 2048 tokens, which is the #1 cause of "no code produced".
+        dev_output = await query_local_slot(
+            dev_prompt,
+            system="You are the Surgical Code Draftsman. You have ONE turn and no interactive tools. Emit complete write() calls for every file — never read_file or terminal.",
+            max_tokens=8192,
+        )
         task["output"] = dev_output
         
         # Real Code Application: Extract code file blocks and write directly to repository filesystem

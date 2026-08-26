@@ -500,6 +500,13 @@ body.resizing-row * {
   overflow-x: auto;
   scrollbar-width: none;
   padding-bottom: 1px;
+  /* As a horizontal scroll strip it's an overflow container; inside a flex COLUMN
+     (topology, contracts, composer) the flex algorithm would otherwise shrink it
+     along the main (vertical) axis to ~0, collapsing the row and overlapping the
+     content below. Pin its height and forbid vertical shrink. */
+  flex-shrink: 0;
+  flex-wrap: nowrap;
+  min-height: fit-content;
 }
 .quick-actions::-webkit-scrollbar {
   display: none;

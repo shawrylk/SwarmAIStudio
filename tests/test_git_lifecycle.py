@@ -87,3 +87,18 @@ class TestToolCallExtraction(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             subprocess.run(["git", "-C", tmp, "init", "-q"], check=True)
             self.assertEqual(extract_code_blocks_and_write(tmp, out), [])
+
+
+class TestTruncationSalvage(unittest.TestCase):
+    def test_salvages_complete_writes_before_truncation(self):
+        from swarm.git_engine import extract_code_blocks_and_write
+        # Two complete writes, then a third truncated mid-content (no closing quote/paren/tag)
+        out = ("<|tool_call_start|>[write(path='a.py', content='print(1)\\n'), "
+               "write(path='b.py', content='print(2)\\n'), "
+               "write(path='c.py', content='def big():\\n    x = 'unterminated")
+        with tempfile.TemporaryDirectory() as tmp:
+            subprocess.run(["git", "-C", tmp, "init", "-q"], check=True)
+            written = sorted(w["path"] for w in extract_code_blocks_and_write(tmp, out))
+            # a.py and b.py recovered; the truncated c.py dropped
+            self.assertEqual(written, ["a.py", "b.py"])
+            self.assertFalse((Path(tmp) / "c.py").exists())

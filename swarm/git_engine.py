@@ -1469,6 +1469,34 @@ def run_test_suite(repo_path: str, custom_cmd: Optional[List[str]] = None, timeo
             "error": err_msg
         }
 
+def _parse_call_list_salvaging(snip: str):
+    """Parse a `[write(...), write(...), ...]` list, tolerating truncation.
+
+    Small models frequently hit max_tokens mid-string, leaving the final call
+    unterminated — which makes a whole-list ast.parse fail and drop *everything*.
+    We first try the list as-is, then salvage the longest valid prefix by trying
+    to close the list at each `)` boundary (largest first), so every COMPLETE
+    write before the truncation point is still recovered.
+    """
+    for candidate in (snip, (snip.rstrip().rstrip(',') + "]") if not snip.rstrip().endswith("]") else snip):
+        try:
+            return ast.parse(candidate.strip(), mode="eval").body
+        except Exception:
+            pass
+    if not snip.startswith("["):
+        return None
+    # Salvage: close the list at each ')' from the end backwards; the first that
+    # parses is the longest run of complete calls.
+    close_positions = [i for i, ch in enumerate(snip) if ch == ")"]
+    for i in reversed(close_positions):
+        candidate = snip[: i + 1] + "]"
+        try:
+            return ast.parse(candidate.strip(), mode="eval").body
+        except Exception:
+            continue
+    return None
+
+
 def _parse_tool_call_writes(llm_output: str) -> List[Dict[str, str]]:
     """Parse the local model's native tool-call format into (path, content) pairs.
 
@@ -1493,13 +1521,8 @@ def _parse_tool_call_writes(llm_output: str) -> List[Dict[str, str]]:
             snippets = [m.group(1)]
 
     for snip in snippets:
-        node = None
-        for candidate in (snip, snip.rstrip().rstrip(',') + "]" if not snip.rstrip().endswith("]") else snip):
-            try:
-                node = ast.parse(candidate.strip(), mode="eval").body
-                break
-            except Exception:
-                continue
+        snip = snip.strip()
+        node = _parse_call_list_salvaging(snip)
         if node is None:
             continue
         calls = node.elts if isinstance(node, ast.List) else [node]

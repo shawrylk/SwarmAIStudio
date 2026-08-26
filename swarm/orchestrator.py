@@ -135,17 +135,17 @@ def update_agent_status(category: str, agent_id: str, status: str, task: str):
                 SWARM_STATE["summary"]["total_nodes"] = 1 + len(SWARM_STATE["consensus_nodes"]) + len(SWARM_STATE["sub_agents"])
         recalculate_swarm_summary()
 
-async def query_local_slot(prompt: str, system: str = "You are a specialized sub-agent.") -> str:
+async def query_local_slot(prompt: str, system: str = "You are a specialized sub-agent.", max_tokens: int = 2048) -> str:
     payload = {
         "messages": [
             {"role": "system", "content": system},
             {"role": "user", "content": prompt}
         ],
         "temperature": 0.2,
-        "max_tokens": 2048
+        "max_tokens": max_tokens
     }
     try:
-        async with httpx.AsyncClient(timeout=90.0) as client:
+        async with httpx.AsyncClient(timeout=180.0) as client:
             resp = await client.post(LFM_URL, json=payload)
             if resp.status_code == 200:
                 return resp.json()["choices"][0]["message"]["content"].strip()

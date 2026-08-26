@@ -272,7 +272,7 @@ class TestLoopResilience(unittest.TestCase):
             original_save(state)
 
         async def run_task():
-            async def mock_slot(prompt, system=""):
+            async def mock_slot(prompt, system="", **kwargs):
                 pu = prompt.upper()
                 if "SURGICAL CODE DRAFTSMAN" in pu:
                     return "def checkpoint_code(): return True"
