@@ -112,7 +112,12 @@ class TestLoopEngine(unittest.TestCase):
                 slot_call_count += 1
                 prompt_u = prompt.upper()
                 if "SURGICAL CODE DRAFTSMAN" in prompt_u:
-                    return "def acquire_lock(key, ttl):\n    return True\n\ndef test_lock():\n    assert acquire_lock('k', 10)"
+                    return (
+                        "<|tool_call_start|>[write(path='src/lock.py', "
+                        "content='def acquire_lock(key, ttl):\\n    return True\\n'), "
+                        "write(path='tests/test_lock.py', "
+                        "content=\"def test_lock():\\n    assert True\\n\")]<|tool_call_end|>"
+                    )
                 elif "ZERO-TRUST QA MANDATE" in prompt_u:
                     # Fail on first attempt, pass on second attempt
                     if slot_call_count <= 3:
@@ -467,7 +472,10 @@ if __name__ == "__main__":
             async def mock_local_slot(prompt, system="", **kwargs):
                 pu = prompt.upper()
                 if "SURGICAL CODE DRAFTSMAN" in pu:
-                    return "def auth(): return True"
+                    return (
+                        "<|tool_call_start|>[write(path='src/auth.py', "
+                        "content='def auth():\\n    return True\\n')]<|tool_call_end|>"
+                    )
                 elif "ZERO-TRUST QA MANDATE" in pu:
                     audit_start_times["qa"] = asyncio.get_event_loop().time()
                     active_during_audit.append({

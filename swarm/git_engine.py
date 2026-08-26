@@ -14,6 +14,7 @@ import os
 import subprocess
 import time
 import shutil
+import importlib.util
 import json
 import re
 import ast
@@ -1271,6 +1272,215 @@ def get_working_diff(repo_path: str, staged_only: bool = False) -> str:
 
     return "\n\n".join(diff_parts).strip()
 
+SKIP_WALK_DIRS = {
+    ".git", "node_modules", ".venv", "venv", "__pycache__", "build", "dist",
+    "bin", "obj", ".tox", ".pytest_cache", "site-packages",
+}
+
+
+def _find_python_test_files(root: Path, limit: int = 200) -> List[Path]:
+    """Return real Python test files (test_*.py / *_test.py) under `root`.
+
+    Existence of a directory called `tests/` proves nothing about the language:
+    a .NET solution keeps C# test projects there. Only actual .py test files
+    justify running a Python test runner.
+    """
+    found: List[Path] = []
+    for dirpath, dirnames, filenames in os.walk(str(root)):
+        dirnames[:] = [d for d in dirnames if d not in SKIP_WALK_DIRS and not d.startswith(".")]
+        for fn in filenames:
+            if not fn.endswith(".py"):
+                continue
+            if fn.startswith("test_") or fn.endswith("_test.py"):
+                found.append(Path(dirpath) / fn)
+                if len(found) >= limit:
+                    return found
+    return found
+
+
+def _module_importable(mod: str) -> bool:
+    """True if `mod` can be imported by the interpreter running the tests."""
+    try:
+        return importlib.util.find_spec(mod) is not None
+    except (ImportError, ValueError, AttributeError):
+        return False
+
+
+def _python_tests_need_pytest(test_files: List[Path]) -> bool:
+    """True if every discovered Python test file imports pytest."""
+    if not test_files:
+        return False
+    for tf in test_files:
+        try:
+            txt = tf.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            return False
+        if "import pytest" not in txt:
+            return False
+    return True
+
+
+# Signatures of a test run that failed for ENVIRONMENT reasons rather than because
+# the code under review is wrong. Feeding these back to the dev agent as "MUST FIX"
+# diagnostics is what turned it into a `pip install pytest` bot that never wrote a
+# single line of the actual feature.
+INFRA_FAILURE_PATTERNS = (
+    "modulenotfounderror",
+    "no module named",
+    "importerror: failed to import test module",
+    "command not found",
+    "is not recognized as an internal or external command",
+    "could not find a project to restore",
+    "msb1003",
+    "no such file or directory",
+    "externally-managed-environment",
+)
+
+
+# A run that collected nothing is not evidence of correctness. `unittest discover`
+# over a repo with one leftover placeholder test exits 0 and reports "OK", which the
+# loop then presented as "REAL TEST EXECUTION: PASSED" while the C# it had just
+# written did not even compile.
+_ZERO_TEST_PATTERNS = (
+    "ran 0 tests",
+    "no tests ran",
+    "collected 0 items",
+    "no tests found",
+    "0 passed",
+    "test files  0",
+)
+
+# Which source languages a given runner can actually verify. Used to detect the
+# case where the deliverable is in one language and the suite that "passed" only
+# covers another.
+RUNNER_LANGUAGES = {
+    "pytest": {".py"},
+    "python -m pytest": {".py"},
+    "unittest": {".py"},
+    "dotnet test": {".cs", ".fs", ".vb"},
+    "cargo test": {".rs"},
+    "go test": {".go"},
+    "npm test": {".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".vue", ".svelte"},
+    "pnpm test": {".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".vue", ".svelte"},
+    "yarn test": {".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".vue", ".svelte"},
+    "bun test": {".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".vue", ".svelte"},
+}
+
+
+def detect_vacuous_pass(test_result: Dict[str, Any]) -> Dict[str, Any]:
+    """Flag a 'passing' run that actually collected zero tests as unverified."""
+    if not test_result.get("success") or test_result.get("skipped"):
+        return test_result
+    blob = (test_result.get("output") or "").lower()
+    for pat in _ZERO_TEST_PATTERNS:
+        if pat in blob:
+            test_result["success"] = False
+            test_result["failure_kind"] = "infra"
+            test_result["vacuous"] = True
+            test_result["infra_reason"] = (
+                f"Test runner '{test_result.get('runner')}' exited 0 but collected no tests "
+                f"('{pat}'). Nothing was verified."
+            )
+            return test_result
+    return test_result
+
+
+def check_runner_covers_deliverable(
+    test_result: Dict[str, Any], written_paths: List[str]
+) -> Dict[str, Any]:
+    """Reject a pass whose runner cannot even parse the language that was written.
+
+    A C# deliverable 'verified' by `unittest discover` running a leftover Python
+    placeholder is not verified at all. When the languages do not intersect, the
+    result is downgraded to UNVERIFIED rather than reported as a pass.
+    """
+    if not test_result.get("success") or test_result.get("skipped") or not written_paths:
+        return test_result
+    covered = RUNNER_LANGUAGES.get(test_result.get("runner") or "")
+    if not covered:
+        return test_result
+    written_exts = {Path(p).suffix.lower() for p in written_paths if Path(p).suffix}
+    # Ignore non-code assets; they are not what a test runner is meant to cover.
+    code_exts = {e for e in written_exts if e not in {
+        ".md", ".txt", ".json", ".yml", ".yaml", ".toml", ".ini", ".cfg",
+        ".lock", ".gitignore", ".env", ".sql", ".csv", ".html", ".css",
+    }}
+    if not code_exts:
+        return test_result
+    if code_exts & covered:
+        return test_result
+    test_result["success"] = False
+    test_result["failure_kind"] = "infra"
+    test_result["coverage_mismatch"] = True
+    test_result["infra_reason"] = (
+        f"Runner '{test_result.get('runner')}' covers {sorted(covered)} but the deliverable "
+        f"is {sorted(code_exts)}. The suite that passed does not exercise the code that was "
+        f"written — treat as UNVERIFIED."
+    )
+    return test_result
+
+
+def classify_test_failure(test_result: Dict[str, Any]) -> Dict[str, Any]:
+    """Split a failing test run into 'infrastructure' vs 'code' failure.
+
+    Returns the same dict with `failure_kind` ("none" | "infra" | "code") and
+    `infra_reason` populated. Only a "code" failure is legitimate feedback for
+    the dev agent; an "infra" failure is a host/environment problem that the
+    dev agent cannot fix by writing files, and must be surfaced to the operator.
+    """
+    if test_result.get("skipped") or test_result.get("success"):
+        test_result["failure_kind"] = "none"
+        test_result["infra_reason"] = ""
+        return test_result
+
+    if test_result.get("missing_dependency"):
+        test_result["failure_kind"] = "infra"
+        test_result["infra_reason"] = (
+            f"Test dependency '{test_result['missing_dependency']}' is not installed on the host."
+        )
+        return test_result
+
+    if test_result.get("exit_code") == 124:
+        test_result["failure_kind"] = "infra"
+        test_result["infra_reason"] = "Test runner timed out before producing a verdict."
+        return test_result
+
+    blob = (test_result.get("output") or "").lower()
+    for pat in INFRA_FAILURE_PATTERNS:
+        if pat in blob:
+            test_result["failure_kind"] = "infra"
+            test_result["infra_reason"] = f"Environment failure signature detected: '{pat}'."
+            return test_result
+
+    test_result["failure_kind"] = "code"
+    test_result["infra_reason"] = ""
+    return test_result
+
+
+def resolve_default_branch(repo_path: str) -> str:
+    """Resolve the repository's real default branch.
+
+    Prefers origin/HEAD, then a local main/master/develop, and only then whatever
+    is currently checked out. Used so an autonomous loop never treats a leftover
+    `swarm/*` branch as its integration target.
+    """
+    head = run_git(repo_path, ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"])
+    if head.get("success") and head.get("stdout", "").strip():
+        name = head["stdout"].strip().split("/", 1)[-1]
+        if name and not name.startswith("swarm/"):
+            return name
+
+    for cand in ("main", "master", "develop", "trunk"):
+        res = run_git(repo_path, ["rev-parse", "--verify", "--quiet", f"refs/heads/{cand}"])
+        if res.get("success") and res.get("stdout", "").strip():
+            return cand
+
+    cur = run_git(repo_path, ["branch", "--show-current"]).get("stdout", "").strip()
+    if cur and not cur.startswith("swarm/"):
+        return cur
+    return "main"
+
+
 def detect_project_test_runner(repo_path: str) -> Optional[Dict[str, Any]]:
     """
     Detects the automated test suite and runner for the repository.
@@ -1283,37 +1493,34 @@ def detect_project_test_runner(repo_path: str) -> Optional[Dict[str, Any]]:
     if not p.exists():
         return None
 
-    # 1. Python Detection
-    pyproject = p / "pyproject.toml"
-    pytest_ini = p / "pytest.ini"
-    setup_cfg = p / "setup.cfg"
     tests_dir = p / "tests"
-    test_dir = p / "test"
-    
-    has_py_tests = False
-    if tests_dir.exists() or test_dir.exists():
-        has_py_tests = True
-    else:
-        for root, _, files in os.walk(str(p)):
-            if any(d in root for d in [".git", "node_modules", ".venv", "venv", "__pycache__", "build", "dist"]):
-                continue
-            if any(f.startswith("test_") or f.endswith("_test.py") for f in files if f.endswith(".py")):
-                has_py_tests = True
-                break
 
-    if pyproject.exists() or pytest_ini.exists() or setup_cfg.exists() or has_py_tests:
-        if shutil.which("pytest"):
-            return {
-                "runner": "pytest",
-                "command": ["pytest"],
-                "name": "pytest"
-            }
-        else:
-            return {
-                "runner": "python_unittest",
-                "command": ["python3", "-m", "unittest", "discover", "tests" if tests_dir.exists() else "."],
-                "name": "unittest"
-            }
+    # 1. Strongly-typed project manifests first. A bare `tests/` directory says
+    #    nothing about language — BankFlow is a .NET solution whose tests/ holds
+    #    C# test projects, and the old Python-first heuristic claimed it as Python
+    #    and ran `unittest discover tests` against it. Manifests are unambiguous,
+    #    so they win over any directory-name guess.
+
+    # A recognised manifest whose toolchain is absent must be reported as a
+    # missing dependency, NOT as "no test suite detected". The latter returns
+    # skipped=True, which the gate treats as a pass — silently approving code
+    # nothing ever compiled.
+    def _manifest_runner(name: str, tool: str, command: List[str]) -> Dict[str, Any]:
+        if shutil.which(tool):
+            return {"runner": tool, "command": command, "name": name}
+        return {"runner": tool, "command": command, "name": name, "missing_dependency": tool}
+
+    # 1a. .NET Detection
+    if any(p.glob("*.sln")) or any(p.glob("*.csproj")):
+        return _manifest_runner("dotnet test", "dotnet", ["dotnet", "test"])
+
+    # 1b. Rust Detection
+    if (p / "Cargo.toml").exists():
+        return _manifest_runner("cargo test", "cargo", ["cargo", "test"])
+
+    # 1c. Go Detection
+    if (p / "go.mod").exists():
+        return _manifest_runner("go test", "go", ["go", "test", "./..."])
 
     # 2. Node / JS / TS Detection
     pkg_json = p / "package.json"
@@ -1333,20 +1540,41 @@ def detect_project_test_runner(repo_path: str) -> Optional[Dict[str, Any]]:
         except Exception:
             pass
 
-    # 3. Rust Detection
-    if (p / "Cargo.toml").exists() and shutil.which("cargo"):
-        return {"runner": "cargo", "command": ["cargo", "test"], "name": "cargo test"}
+    # 3. Python Detection — requires an ACTUAL Python test file, never just a
+    #    directory named tests/. Also prefers `python3 -m pytest` when pytest is
+    #    importable but has no console script on PATH (the old `shutil.which`
+    #    check fell through to unittest, which then choked on `import pytest`).
+    py_test_files = _find_python_test_files(p)
+    has_py_manifest = any(
+        (p / m).exists() for m in ("pyproject.toml", "pytest.ini", "setup.cfg", "tox.ini")
+    )
+    if py_test_files:
+        if shutil.which("pytest"):
+            return {"runner": "pytest", "command": ["pytest"], "name": "pytest"}
+        if _module_importable("pytest"):
+            return {"runner": "pytest", "command": ["python3", "-m", "pytest"], "name": "python -m pytest"}
+        if _python_tests_need_pytest(py_test_files):
+            # Every discovered test imports pytest, but pytest is not installed.
+            # Running unittest here yields a guaranteed ImportError that has
+            # nothing to do with the code under review, so refuse to run at all.
+            return {
+                "runner": "python_unittest",
+                "command": ["python3", "-m", "unittest", "discover",
+                            "tests" if tests_dir.exists() else "."],
+                "name": "unittest",
+                "missing_dependency": "pytest",
+            }
+        return {
+            "runner": "python_unittest",
+            "command": ["python3", "-m", "unittest", "discover",
+                        "tests" if tests_dir.exists() else "."],
+            "name": "unittest",
+        }
+    if has_py_manifest and (shutil.which("pytest") or _module_importable("pytest")):
+        cmd = ["pytest"] if shutil.which("pytest") else ["python3", "-m", "pytest"]
+        return {"runner": "pytest", "command": cmd, "name": "pytest"}
 
-    # 4. Go Detection
-    if (p / "go.mod").exists() and shutil.which("go"):
-        return {"runner": "go", "command": ["go", "test", "./..."], "name": "go test"}
-
-    # 5. .NET Detection
-    if any(p.glob("*.sln")) or any(p.glob("*.csproj")):
-        if shutil.which("dotnet"):
-            return {"runner": "dotnet", "command": ["dotnet", "test"], "name": "dotnet test"}
-
-    # 6. Makefile Detection
+    # 4. Makefile Detection
     makefile = p / "Makefile"
     if makefile.exists():
         try:
@@ -1357,9 +1585,26 @@ def detect_project_test_runner(repo_path: str) -> Optional[Dict[str, Any]]:
 
     return None
 
-def run_test_suite(repo_path: str, custom_cmd: Optional[List[str]] = None, timeout: int = 60) -> Dict[str, Any]:
+# Compiled-language suites need far longer than a scripted one. A 60s cap on
+# `dotnet test` over a multi-project solution times out every time, which then
+# looks identical to a real test failure.
+RUNNER_TIMEOUTS = {
+    "dotnet test": 900,
+    "cargo test": 600,
+    "go test": 300,
+    "make test": 600,
+    "npm test": 300,
+    "pnpm test": 300,
+    "yarn test": 300,
+    "bun test": 300,
+}
+DEFAULT_TEST_TIMEOUT = 120
+
+
+def run_test_suite(repo_path: str, custom_cmd: Optional[List[str]] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
     """
     Executes the real project test suite via subprocess, capturing exit code, stdout, stderr, and tracebacks.
+    `timeout` defaults to a per-runner budget (see RUNNER_TIMEOUTS) when not given.
     """
     if not repo_path:
         return {
@@ -1406,6 +1651,28 @@ def run_test_suite(repo_path: str, custom_cmd: Optional[List[str]] = None, timeo
             }
         cmd = runner_info["command"]
         runner_name = runner_info.get("name", runner_info.get("runner", "unknown"))
+        missing_dep = runner_info.get("missing_dependency")
+        if missing_dep:
+            # Refuse to execute a run whose failure is preordained by a missing
+            # host dependency; report it as infrastructure, not as a code defect.
+            log_event("warn", "test_runner",
+                      f"Skipping test execution: required dependency '{missing_dep}' not installed")
+            return {
+                "success": False,
+                "skipped": False,
+                "exit_code": 127,
+                "stdout": "",
+                "stderr": f"Required test dependency '{missing_dep}' is not installed.",
+                "output": f"Required test dependency '{missing_dep}' is not installed on the host. "
+                          f"Test execution was not attempted.",
+                "runner": runner_name,
+                "duration_ms": 0.0,
+                "missing_dependency": missing_dep,
+                "error": f"Missing test dependency: {missing_dep}",
+            }
+
+    if timeout is None:
+        timeout = RUNNER_TIMEOUTS.get(runner_name, DEFAULT_TEST_TIMEOUT)
 
     t0 = time.time()
     try:

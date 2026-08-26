@@ -275,7 +275,10 @@ class TestLoopResilience(unittest.TestCase):
             async def mock_slot(prompt, system="", **kwargs):
                 pu = prompt.upper()
                 if "SURGICAL CODE DRAFTSMAN" in pu:
-                    return "def checkpoint_code(): return True"
+                    return (
+                        "<|tool_call_start|>[write(path='src/checkpoint.py', "
+                        "content='def checkpoint_code():\\n    return True\\n')]<|tool_call_end|>"
+                    )
                 elif "ZERO-TRUST QA MANDATE" in pu:
                     return "VERDICT: PASSED"
                 elif "ZERO-TRUST SECURITY MANDATE" in pu:

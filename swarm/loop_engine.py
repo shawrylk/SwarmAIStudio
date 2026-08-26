@@ -26,8 +26,12 @@ from swarm.git_engine import (
     format_repo_prompt_block,
     run_git,
     switch_or_create_branch,
+    resolve_default_branch,
     detect_project_test_runner,
     run_test_suite,
+    classify_test_failure,
+    detect_vacuous_pass,
+    check_runner_covers_deliverable,
     extract_code_blocks_and_write,
     get_working_diff,
     commit_changes,
@@ -490,6 +494,127 @@ Respond ONLY with a valid JSON array of objects with this schema:
 
     return formatted_tasks
 
+# How many extra write-only prompts to issue when the dev stage returns no files.
+DEV_WRITE_REPAIR_TURNS = 2
+
+DEV_WRITE_ONLY_SYSTEM = (
+    "You are the Surgical Code Draftsman. This harness executes NO tools for you. "
+    "read_file, bash, exec, run, terminal and list_dir calls are silently discarded — "
+    "if you emit one, your work is lost. Your entire response must consist of write() "
+    "calls containing complete file bodies."
+)
+
+# Tool calls the model emits that this single-turn harness cannot serve. Naming the
+# exact call back to the model is a much stronger corrective than a generic scold.
+_UNSERVABLE_CALL_RE = re.compile(
+    r"\b(read_file|read|list_dir|ls|bash|exec|run|terminal|shell|search|grep|glob)\s*\(",
+    re.IGNORECASE,
+)
+
+
+def _describe_unservable_tool_calls(output: str) -> str:
+    """Summarise which unservable tool calls the model asked for, e.g. 'bash, read_file'."""
+    if not output:
+        return ""
+    names = []
+    for m in _UNSERVABLE_CALL_RE.finditer(output):
+        nm = m.group(1).lower()
+        if nm not in names:
+            names.append(nm)
+    return ", ".join(names[:6])
+
+
+def _build_write_repair_prompt(original_prompt: str, bad_output: str, requested: str) -> str:
+    """Re-ask for the same task, quoting the rejected non-write response back."""
+    called = (
+        f"You emitted {requested}() call(s). Those were DISCARDED — this harness "
+        f"cannot run them and you will never receive a result.\n"
+        if requested else
+        "Your response contained no write() call, so nothing was applied.\n"
+    )
+    return f"""{original_prompt}
+
+=== YOUR PREVIOUS RESPONSE WAS REJECTED: ZERO FILES WRITTEN ===
+{called}
+Your rejected response began:
+{bad_output[:600]}
+
+You do NOT need to inspect the repository, install anything, or run any command.
+Write the files from first principles using the task description above. If you
+need a value you cannot verify, choose a sensible default and encode it in the code.
+
+Respond with NOTHING except write() calls, in exactly this shape:
+<|tool_call_start|>[write(path='relative/path.ext', content='<COMPLETE FILE BODY>')]<|tool_call_end|>
+=================================================================
+"""
+
+
+def _parse_verdict(output: str) -> bool:
+    """True only on an explicit `VERDICT: PASSED`.
+
+    The old heuristic (`"PASSED" in out and "FAILED" not in out`) let ordinary
+    prose decide the gate and treated an unservable tool-call response — which
+    contains neither token — as ambiguous. Absence of a verdict is now a fail.
+    """
+    if not output:
+        return False
+    matches = re.findall(r"VERDICT\s*:\s*(PASSED|FAILED)", output, re.IGNORECASE)
+    if not matches:
+        return False
+    return matches[-1].upper() == "PASSED"
+
+
+def _parse_decision(output: str) -> bool:
+    """True only on an explicit `DECISION: APPROVED` from the auto-judge."""
+    if not output:
+        return False
+    matches = re.findall(r"DECISION\s*:\s*(APPROVED|REJECTED)", output, re.IGNORECASE)
+    if not matches:
+        return False
+    return matches[-1].upper() == "APPROVED"
+
+
+def _build_dev_feedback(
+    test_result: Dict[str, Any],
+    qa_output: str,
+    sec_output: str,
+    judge_output: str,
+    infra_broken: bool,
+    wrote_files: bool,
+) -> str:
+    """Assemble retry feedback that the dev agent can actually act on by writing files.
+
+    Critically, an infrastructure failure trace is withheld. Handing the agent a
+    `ModuleNotFoundError: pytest` and labelling it "MUST FIX ALL" reliably derails
+    it into emitting `bash(pip install pytest)` — an unservable call — so it spends
+    every remaining attempt on the environment and never writes the feature.
+    """
+    parts = []
+    if not wrote_files:
+        parts.append(
+            "=== BLOCKING: NO FILES WERE WRITTEN ===\n"
+            "Your previous response applied zero files. Emit write() calls with complete "
+            "file bodies. Do not emit read_file, bash, exec or any other tool call."
+        )
+    if infra_broken:
+        parts.append(
+            "=== TEST ENVIRONMENT UNAVAILABLE (NOT YOUR FAULT, NOT YOUR JOB) ===\n"
+            f"{test_result.get('infra_reason', '')}\n"
+            "The operator must fix this. Do NOT attempt to install packages, run "
+            "commands, or modify dependency manifests to work around it. Write the "
+            "feature code and its tests as if the runner worked."
+        )
+    else:
+        trace = (test_result.get("output") or "").strip()
+        if trace:
+            parts.append(f"=== REAL TEST EXECUTION FAILURE TRACE ===\n{trace[:3000]}")
+
+    parts.append(f"=== QA VERIFIER FEEDBACK ===\n{qa_output[:2000]}")
+    parts.append(f"=== SECURITY AUDIT ===\n{sec_output[:1500]}")
+    parts.append(f"=== AUTO-JUDGE DIAGNOSTICS ===\n{judge_output[:1500]}")
+    return "\n\n".join(parts)
+
+
 async def execute_zero_trust_task(
     task: Dict[str, Any],
     repo_block: str,
@@ -576,10 +701,40 @@ Every file you name MUST include its full, production-grade content (Clean Archi
         
         # Real Code Application: Extract code file blocks and write directly to repository filesystem
         written_files = extract_code_blocks_and_write(repo_path, dev_output)
+
+        # No-write repair turn. The small model routinely answers with an
+        # inspection/shell tool-call (read_file, bash, exec) that this harness
+        # cannot serve, so nothing lands on disk. Retrying the DEV stage alone is
+        # far cheaper than running QA + Security + Oracle + Judge against an empty
+        # diff and then replaying the whole 5-stage pipeline.
+        for repair in range(1, DEV_WRITE_REPAIR_TURNS + 1):
+            if written_files:
+                break
+            requested = _describe_unservable_tool_calls(dev_output)
+            log_loop_activity(
+                f"⚠️ Dev produced no file writes"
+                f"{f' (model asked for: {requested})' if requested else ''}. "
+                f"Issuing write-only repair prompt {repair}/{DEV_WRITE_REPAIR_TURNS}...",
+                category="dev",
+            )
+            dev_output = await query_local_slot(
+                _build_write_repair_prompt(dev_prompt, dev_output, requested),
+                system=DEV_WRITE_ONLY_SYSTEM,
+                max_tokens=8192,
+            )
+            written_files = extract_code_blocks_and_write(repo_path, dev_output)
+
+        task["output"] = dev_output
         task["files_written"] = [f["path"] for f in written_files]
         task["written_files_meta"] = written_files
         if written_files:
             log_loop_activity(f"📝 Dev Draftsman applied {len(written_files)} files to disk: {', '.join(f['path'] for f in written_files)}", category="dev")
+        else:
+            log_loop_activity(
+                f"❌ Dev Draftsman wrote 0 files for '{task_title}' after "
+                f"{DEV_WRITE_REPAIR_TURNS} repair turns — nothing to audit.",
+                category="dev",
+            )
         
         task["stage"] = "dev_draft_completed"
         update_agent_status("sub_agents", "agent_dev", "idle", "Code drafted")
@@ -590,11 +745,45 @@ Every file you name MUST include its full, production-grade content (Clean Archi
         # STAGE 2-4: ZERO-TRUST AUDIT PHASE (PARALLEL FAN-OUT OR SEQUENTIAL)
         # ─────────────────────────────────────────────────────────────
         # Real Test Runner Execution: Run detected project test suite (pytest, unittest, npm test, etc.)
+        # Verification chain: run -> classify infra vs code -> reject a zero-test
+        # "pass" -> reject a pass whose runner cannot cover the deliverable's
+        # language. Without the last two, `unittest discover` running one leftover
+        # placeholder reported "PASSED" for C# that never compiled.
         test_result = run_test_suite(repo_path)
+        test_result = classify_test_failure(test_result)
+        test_result = detect_vacuous_pass(test_result)
+        test_result = check_runner_covers_deliverable(
+            test_result, [f["path"] for f in written_files]
+        )
         task["test_results"] = test_result
+        infra_broken = test_result.get("failure_kind") == "infra"
         if not test_result.get("skipped", False):
-            test_status_str = "PASSED (exit 0)" if test_result.get("success") else f"FAILED (exit {test_result.get('exit_code')})"
+            if test_result.get("success"):
+                test_status_str = "PASSED (exit 0)"
+            elif infra_broken:
+                test_status_str = f"INFRASTRUCTURE FAILURE (exit {test_result.get('exit_code')}) — not a code defect"
+            else:
+                test_status_str = f"FAILED (exit {test_result.get('exit_code')})"
             log_loop_activity(f"🧪 Real test runner ({test_result.get('runner')}): {test_status_str}", category="qa")
+        if infra_broken:
+            # The host environment, not the deliverable, is broken. Record it as a
+            # loop-level blocker and keep it OUT of the dev agent's feedback channel:
+            # the agent cannot fix a missing interpreter dependency by writing files,
+            # and handing it the trace makes it burn every retry on `pip install`.
+            LOOP_STATE.setdefault("infra_blockers", [])
+            blocker = {
+                "task_id": task["id"],
+                "runner": test_result.get("runner"),
+                "reason": test_result.get("infra_reason", ""),
+                "detail": (test_result.get("output") or "")[:400],
+            }
+            if blocker not in LOOP_STATE["infra_blockers"]:
+                LOOP_STATE["infra_blockers"].append(blocker)
+            log_loop_activity(
+                f"🚧 Test infrastructure blocker: {test_result.get('infra_reason')} "
+                f"Verification for '{task_title}' is UNVERIFIED — fix the host environment.",
+                category="qa",
+            )
 
         # Capture real working tree diff
         working_diff = get_working_diff(repo_path)
@@ -779,14 +968,29 @@ Verify invariant consistency and report consensus sign-off or potential blind sp
             oracle_output = await query_qwen_web(oracle_prompt)
             update_agent_status("consensus_nodes", "qwen", "ready", "Consensus verified")
 
-        # Evaluate QA verdict
-        if not test_result.get("skipped", False) and not test_result.get("success", True):
+        # Evaluate QA verdict. An empty deliverable can never pass, and an
+        # infrastructure failure yields UNVERIFIED (never a silent pass).
+        if not written_files:
+            qa_passed = False
+            qa_output = (
+                "VERDICT: FAILED (Reason: Dev produced no file writes; there is no "
+                "deliverable to audit.)\n\n" + qa_output
+            )
+        elif infra_broken:
+            qa_passed = False
+            qa_output = (
+                f"VERDICT: FAILED (Reason: UNVERIFIED — test infrastructure failure, "
+                f"not a code defect: {test_result.get('infra_reason')})\n"
+                f"Runner: {test_result.get('runner')} exited {test_result.get('exit_code')}.\n\n"
+                f"QA Analysis:\n{qa_output}"
+            )
+        elif not test_result.get("skipped", False) and not test_result.get("success", True):
             qa_passed = False
             qa_output = f"REAL TEST EXECUTION FAILED (Runner: {test_result.get('runner')}, Exit Code: {test_result.get('exit_code')}):\n{test_result.get('output', '')}\n\nQA Diagnostic Verification:\n{qa_output}\nVERDICT: FAILED (Reason: Real test suite failed with exit code {test_result.get('exit_code')})"
         else:
-            qa_passed = ("VERDICT: PASSED" in qa_output.upper()) or ("PASSED" in qa_output.upper() and "FAILED" not in qa_output.upper() and "VERDICT: FAILED" not in qa_output.upper())
+            qa_passed = _parse_verdict(qa_output)
 
-        sec_passed = ("VERDICT: PASSED" in sec_output.upper()) or ("PASSED" in sec_output.upper() and "FAILED" not in sec_output.upper() and "VERDICT: FAILED" not in sec_output.upper())
+        sec_passed = _parse_verdict(sec_output)
 
         task["qa_verdict"] = qa_output
         task["qa_passed"] = qa_passed
@@ -842,30 +1046,43 @@ DECISION: REJECTED (Diagnostics: <concrete diagnostic issues to fix>)
         judge_output = await query_local_slot(judge_prompt, system="You are the Autonomous Swarm Judge. Enforce zero-defect gatekeeping.")
         update_agent_status("sub_agents", "agent_judge", "idle", "Evaluation complete")
 
-        is_approved = (
-            qa_passed and
-            sec_passed and
-            test_result.get("success", True) and
-            ("APPROVED" in judge_output.upper() or "DECISION: APPROVED" in judge_output.upper()) and
-            "REJECTED" not in judge_output.upper() and
-            "FAILED" not in judge_output.upper()
-        ) or (
-            qa_passed and
-            sec_passed and
-            test_result.get("success", True) and
-            "REJECTED" not in judge_output.upper() and
-            "FAILED" not in judge_output.upper()
-        )
+        # Gate. Previously the two disjuncts made the judge's own decision dead
+        # code (the second was strictly weaker than the first), and the
+        # `"FAILED" not in judge_output` scan was near-unsatisfiable because any
+        # audit prose discussing failure modes tripped it. Now: each precondition
+        # is checked explicitly, and the judge's DECISION line is parsed rather
+        # than substring-matched against the whole response.
+        tests_ok = bool(test_result.get("skipped")) or bool(test_result.get("success"))
+        judge_approved = _parse_decision(judge_output)
+        gate_reasons = []
+        if not written_files:
+            gate_reasons.append("dev wrote no files")
+        if not qa_passed:
+            gate_reasons.append("QA verdict not PASSED")
+        if not sec_passed:
+            gate_reasons.append("security verdict not PASSED")
+        if not tests_ok:
+            gate_reasons.append(f"test suite failed (exit {test_result.get('exit_code')})")
+        if infra_broken:
+            gate_reasons.append("test infrastructure broken — deliverable UNVERIFIED")
+        if not judge_approved:
+            gate_reasons.append("auto-judge did not issue DECISION: APPROVED")
+
+        is_approved = not gate_reasons
+        task["gate_reasons"] = gate_reasons
 
         task["judge_certificate"] = judge_output
         task["stage"] = "judge_completed"
         persist_active_loop_state()  # Granular Checkpoint: after judge decision
 
         if not is_approved and attempt < max_retries:
-            diagnostic_feedback = f"=== REAL TEST EXECUTION FAILURE TRACE ===\n{test_result.get('output', '')}\n\n=== QA VERIFIER FEEDBACK ===\n{qa_output}\n\n=== SECURITY AUDIT ===\n{sec_output}\n\n=== AUTO-JUDGE DIAGNOSTICS ===\n{judge_output}"
+            diagnostic_feedback = _build_dev_feedback(
+                test_result, qa_output, sec_output, judge_output,
+                infra_broken=infra_broken, wrote_files=bool(written_files),
+            )
             task["diagnostic_feedback"] = diagnostic_feedback
             persist_active_loop_state()
-            log_loop_activity(f"❌ Auto-Judge REJECTED '{task_title}' (Attempt {attempt}/{max_retries}). Retrying with test diagnostic feedback...", category="judge")
+            log_loop_activity(f"❌ Auto-Judge REJECTED '{task_title}' (Attempt {attempt}/{max_retries}): {'; '.join(gate_reasons)}. Retrying...", category="judge")
             if github_issue_num:
                 gh_issue_comment(
                     repo_path,
@@ -874,6 +1091,37 @@ DECISION: REJECTED (Diagnostics: <concrete diagnostic issues to fix>)
                 )
             await asyncio.sleep(0.5)
             continue
+        elif not is_approved:
+            # Retries exhausted and the gate still says no. This branch used to
+            # fall through to the success path — marking the task "completed",
+            # committing, flipping the board card to Done and posting "APPROVED by
+            # Auto-Judge" while qa_passed was False. That fabricated verdict is
+            # what let unverified junk reach the merge step. Terminal state is now
+            # an explicit failure that commits nothing.
+            task["status"] = "failed"
+            task["stage"] = "gate_failed"
+            task["failure_reasons"] = gate_reasons
+            task["diagnostic_feedback"] = _build_dev_feedback(
+                test_result, qa_output, sec_output, judge_output,
+                infra_broken=infra_broken, wrote_files=bool(written_files),
+            )
+            log_loop_activity(
+                f"⛔ Task '{task_title}' FAILED the zero-trust gate after {max_retries} attempts "
+                f"({'; '.join(gate_reasons)}). No commit, no merge.",
+                category="judge",
+            )
+            board = LOOP_STATE.get("project_board", {})
+            if board.get("number") and task.get("board_item_id"):
+                gh_project_set_status(repo_path, board["owner"], board["number"], task["board_item_id"], status="Todo")
+            if github_issue_num:
+                gh_issue_comment(
+                    repo_path,
+                    github_issue_num,
+                    f"⛔ Task '{task_title}' FAILED after {max_retries} attempts.\n\n"
+                    f"### Unmet gate conditions\n" + "\n".join(f"- {r}" for r in gate_reasons)
+                )
+            persist_active_loop_state()
+            break
         else:
             task["output"] = dev_output
             task["qa_verdict"] = qa_output
@@ -937,7 +1185,21 @@ async def _async_loop_runner():
         # Branch & Worktree Isolation: Create and switch to isolated task/loop branch
         if repo_path and (Path(repo_path) / ".git").exists():
             base_br_res = run_git(repo_path, ["branch", "--show-current"])
-            base_branch = base_br_res.get("stdout", "") or "main"
+            base_branch = base_br_res.get("stdout", "") or ""
+            # Never branch off (or merge back into) a leftover swarm branch. A
+            # previous loop leaves its branch checked out, so this used to chain
+            # loop onto loop: the DeltaProject run merged into
+            # 'swarm/loop-1787743921' instead of the real default branch, and main
+            # never saw the work while junk accumulated on a detached lineage.
+            if not base_branch or base_branch.startswith("swarm/"):
+                resolved = resolve_default_branch(repo_path)
+                log_loop_activity(
+                    f"🌿 Current branch '{base_branch or '(none)'}' is a swarm branch or unset — "
+                    f"using default branch '{resolved}' as the integration target.",
+                    category="git",
+                )
+                base_branch = resolved
+                switch_or_create_branch(repo_path, base_branch, create=False)
             LOOP_STATE["target_branch"] = base_branch
             
             sess_id_short = LOOP_STATE["session_id"].replace("loop_", "")[:10]
@@ -1102,6 +1364,32 @@ async def _async_loop_runner():
 
         # 5. Phase 4: Final Synthesis, Deliverable Sign-off & Merge to Main
         all_completed = all(t.get("status") == "completed" for t in tasks) if tasks else False
+        failed_tasks = [t for t in tasks if t.get("status") == "failed"]
+        infra_blockers = LOOP_STATE.get("infra_blockers", []) or []
+
+        if failed_tasks:
+            # Explicit, non-negotiable stop. Nothing is merged when any task failed
+            # the zero-trust gate; the branch is left intact for inspection.
+            LOOP_STATE["produced_code"] = any(t.get("files_written") for t in tasks)
+            LOOP_STATE["files_written_total"] = sum(len(t.get("files_written", []) or []) for t in tasks)
+            LOOP_STATE["failed_task_count"] = len(failed_tasks)
+            log_loop_activity(
+                f"⛔ {len(failed_tasks)}/{len(tasks)} task(s) FAILED the zero-trust gate. "
+                f"NOT merging into '{LOOP_STATE.get('target_branch', 'main')}'. "
+                f"Branch '{LOOP_STATE.get('git_branch', '')}' is preserved for inspection.",
+                category="loop",
+            )
+            for t in failed_tasks:
+                log_loop_activity(
+                    f"   • '{t.get('title')}': {'; '.join(t.get('failure_reasons', []) or ['unspecified'])}",
+                    category="loop",
+                )
+            for b in infra_blockers:
+                log_loop_activity(
+                    f"   🚧 Host blocker ({b.get('runner')}): {b.get('reason')}",
+                    category="loop",
+                )
+
         if not _stop_flag and LOOP_STATE.get("status") in ("running", "recovering") and all_completed:
             log_loop_activity("👑 Synthesizing all sub-agent deliverables into final Feature Document...", category="advisor")
             update_agent_status("orchestrator", "gemini", "running", "Synthesizing final feature artifact & sign-off...")
@@ -1117,6 +1405,24 @@ async def _async_loop_runner():
             LOOP_STATE["produced_code"] = produced_code
             LOOP_STATE["files_written_total"] = total_files_written
 
+            # Verification honesty gate. `produced_code` only proves bytes hit the
+            # disk — it was previously the ONLY merge precondition besides task
+            # status, so placeholder junk satisfied it. Require that every task
+            # actually cleared QA and that no host-level blocker left the suite
+            # unverified before anything touches the default branch.
+            unverified = [t.get("title") for t in LOOP_STATE["tasks"] if not t.get("qa_passed")]
+            merge_blocked_reason = ""
+            if unverified:
+                merge_blocked_reason = (
+                    f"{len(unverified)} task(s) never passed QA: {', '.join(str(u) for u in unverified[:5])}"
+                )
+            elif infra_blockers:
+                merge_blocked_reason = (
+                    f"test infrastructure unavailable ({infra_blockers[0].get('reason')}) — "
+                    f"deliverable is UNVERIFIED"
+                )
+            LOOP_STATE["merge_blocked_reason"] = merge_blocked_reason
+
             # Real Merge to Main: Merge isolated loop branch into target default branch
             target_branch = LOOP_STATE.get("target_branch", "main")
             loop_branch = LOOP_STATE.get("git_branch", "")
@@ -1124,6 +1430,13 @@ async def _async_loop_runner():
                 log_loop_activity(
                     "⚠️ No code was produced by any task (the model emitted no applicable file changes). "
                     "Skipping merge — nothing to integrate. Review the task outputs and re-run.",
+                    category="loop",
+                )
+            elif merge_blocked_reason:
+                log_loop_activity(
+                    f"⛔ Merge BLOCKED — {merge_blocked_reason}. "
+                    f"Branch '{loop_branch}' is preserved; nothing was integrated into "
+                    f"'{target_branch}'. Fix the blocker and re-run.",
                     category="loop",
                 )
             elif repo_path and (Path(repo_path) / ".git").exists() and loop_branch and loop_branch != target_branch:
