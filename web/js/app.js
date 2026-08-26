@@ -1,6 +1,6 @@
 /**
  * Swarm AI Studio Frontend Controller
- * Multi-Chat, Full GitHub Desktop, Stash Local Changes & Worktree Manager
+ * Multi-Chat, Full GitHub Desktop, Stash Local Changes, Worktree Manager & Autonomous Loop Agent
  */
 
 let activeSessionId = "";
@@ -14,6 +14,7 @@ let selectedGhdCommit = "";
 let checkedFiles = new Set();
 let allBranches = [];
 let pollInterval = null;
+let loopPollInterval = null;
 let debugPollInterval = null;
 let currentModalContent = "";
 let currentModalFilename = "";
@@ -21,11 +22,13 @@ let pendingBranchSwitch = null;
 
 function switchTab(tabId) {
   document.getElementById('tabChatBtn').className = (tabId === 'chat') ? 'tab-btn active' : 'tab-btn';
+  document.getElementById('tabLoopBtn').className = (tabId === 'loop') ? 'tab-btn active' : 'tab-btn';
   document.getElementById('tabGitBtn').className = (tabId === 'git') ? 'tab-btn active' : 'tab-btn';
   document.getElementById('tabTopoBtn').className = (tabId === 'topo') ? 'tab-btn active' : 'tab-btn';
   document.getElementById('tabVaultBtn').className = (tabId === 'vault') ? 'tab-btn active' : 'tab-btn';
   
   document.getElementById('tabChat').className = (tabId === 'chat') ? 'tab-content active' : 'tab-content';
+  document.getElementById('tabLoop').className = (tabId === 'loop') ? 'tab-content active' : 'tab-content';
   document.getElementById('tabGit').className = (tabId === 'git') ? 'tab-content active' : 'tab-content';
   document.getElementById('tabTopo').className = (tabId === 'topo') ? 'tab-content active' : 'tab-content';
   document.getElementById('tabVault').className = (tabId === 'vault') ? 'tab-content active' : 'tab-content';
@@ -35,6 +38,12 @@ function switchTab(tabId) {
 
   if (tabId === 'git') loadGitHubDesktopState();
   if (tabId === 'vault') loadArtifactsVault();
+  if (tabId === 'loop') {
+    pollLoopState();
+    if (!loopPollInterval) loopPollInterval = setInterval(pollLoopState, 1200);
+  } else {
+    if (loopPollInterval) { clearInterval(loopPollInterval); loopPollInterval = null; }
+  }
 }
 
 function parseMarkdown(md) {
@@ -53,6 +62,185 @@ function parseMarkdown(md) {
   html = html.replace(/(<li>[\s\S]*?<\/li>)/gim, '<ul>$1</ul>');
   html = html.replace(/\n\n/g, '<br><br>');
   return html;
+}
+
+// ─────────────────────────────────────────────────────────────
+// AUTONOMOUS LOOP AGENT CONTROLLER (AUTO-DEV SWARM)
+// ─────────────────────────────────────────────────────────────
+async function startAutonomousLoop() {
+  const goal = document.getElementById('loopGoalInput').value.trim();
+  if (!goal) {
+    alert("Please enter a goal or feature description for the Autonomous Swarm.");
+    return;
+  }
+
+  try {
+    const res = await fetch('/api/loop/start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ goal: goal, repo_path: currentRepoPath })
+    });
+    const data = await res.json();
+    if (data.success) {
+      pollLoopState();
+    } else {
+      alert("Loop Error: " + data.error);
+    }
+  } catch(e) { alert("Error: " + e.message); }
+}
+
+async function pauseAutonomousLoop() {
+  await fetch('/api/loop/pause', { method: 'POST' });
+  pollLoopState();
+}
+
+async function resumeAutonomousLoop() {
+  await fetch('/api/loop/resume', { method: 'POST' });
+  pollLoopState();
+}
+
+async function stopAutonomousLoop() {
+  if (confirm("Stop the autonomous loop execution?")) {
+    await fetch('/api/loop/stop', { method: 'POST' });
+    pollLoopState();
+  }
+}
+
+async function pollLoopState() {
+  try {
+    const res = await fetch('/api/loop/status', { cache: 'no-store' });
+    const state = await res.json();
+    renderLoopDashboard(state);
+  } catch(e) {}
+}
+
+function renderLoopDashboard(state) {
+  const statusBadge = document.getElementById('loopStatusBadge');
+  const startBtn = document.getElementById('loopStartBtn');
+  const pauseBtn = document.getElementById('loopPauseBtn');
+  const stopBtn = document.getElementById('loopStopBtn');
+
+  if (statusBadge) {
+    const s = (state.status || 'idle').toUpperCase();
+    statusBadge.innerText = s;
+    statusBadge.className = `status-badge ${s === 'RUNNING' ? 'badge-running' : (s === 'COMPLETED' ? 'badge-online' : 'badge-idle')}`;
+  }
+
+  if (startBtn && pauseBtn && stopBtn) {
+    if (state.status === 'running') {
+      startBtn.style.display = 'none';
+      pauseBtn.style.display = 'inline-flex';
+      pauseBtn.innerText = '⏸️ Pause';
+      stopBtn.style.display = 'inline-flex';
+    } else if (state.status === 'paused') {
+      startBtn.style.display = 'none';
+      pauseBtn.style.display = 'inline-flex';
+      pauseBtn.innerText = '▶️ Resume';
+      stopBtn.style.display = 'inline-flex';
+    } else {
+      startBtn.style.display = 'inline-flex';
+      pauseBtn.style.display = 'none';
+      stopBtn.style.display = 'none';
+    }
+  }
+
+  // Render Active Sub-Agent
+  const activeBox = document.getElementById('loopActiveAgentBox');
+  if (activeBox) {
+    if (state.active_subagent) {
+      const sa = state.active_subagent;
+      activeBox.innerHTML = `
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+          <span style="font-weight:800; color:#ffffff; font-size:13.5px;">⚡ Active: ${escapeHtml(sa.name)}</span>
+          <span class="file-status-badge status-a">${escapeHtml(sa.slot)}</span>
+        </div>
+        <div style="font-size:12px; color:var(--accent); font-family:monospace; margin-top:2px;">
+          Working on: <b>${escapeHtml(sa.task_title)}</b>
+        </div>
+      `;
+      activeBox.style.display = 'block';
+    } else {
+      activeBox.style.display = 'none';
+    }
+  }
+
+  // Render Task Pipeline Kanban
+  const taskContainer = document.getElementById('loopTaskGrid');
+  if (taskContainer) {
+    const tasks = state.tasks || [];
+    if (tasks.length === 0) {
+      taskContainer.innerHTML = '<div style="color:var(--text-muted); padding:16px; text-align:center; grid-column:1/-1;">No tasks scheduled yet. Start a goal to decompose into PM, Dev, QA, and Review stages.</div>';
+    } else {
+      taskContainer.innerHTML = '';
+      tasks.forEach((t) => {
+        const card = document.createElement('div');
+        const isCurrent = (t.id === state.current_task_id && state.status === 'running');
+        card.className = `task-pipeline-card ${isCurrent ? 'in-progress' : (t.status === 'completed' ? 'completed' : '')}`;
+        
+        const roleColors = {
+          pm: 'status-u',
+          dev: 'status-m',
+          qa: 'status-a',
+          review: 'status-d'
+        };
+        const badgeClass = roleColors[t.role] || 'status-u';
+
+        card.innerHTML = `
+          <div style="display:flex; justify-content:space-between; align-items:center;">
+            <span class="file-status-badge ${badgeClass}">${escapeHtml(t.role.toUpperCase())}</span>
+            <span style="font-size:11px; font-family:monospace; font-weight:800; color:${t.status === 'completed' ? 'var(--green)' : (isCurrent ? 'var(--accent)' : 'var(--text-muted)')};">
+              ${isCurrent ? '⚡ IN PROGRESS' : escapeHtml(t.status.toUpperCase())}
+            </span>
+          </div>
+          <div style="font-weight:700; color:#ffffff; font-size:13px; line-height:1.4;">${escapeHtml(t.title)}</div>
+          <div style="font-size:11.5px; color:#cbd5e1;">${escapeHtml(t.description || '')}</div>
+          <div style="font-family:monospace; font-size:11px; color:#93c5fd; background:#070a12; padding:4px 8px; border-radius:4px; border:1px solid #1e293b;">
+            🤖 Assigned: ${escapeHtml(t.assigned_agent)}
+          </div>
+        `;
+        taskContainer.appendChild(card);
+      });
+    }
+  }
+
+  // Render Advisor Pings & Consultations Feed
+  const pingContainer = document.getElementById('loopAdvisorPingsContainer');
+  if (pingContainer) {
+    const pings = state.advisor_pings || [];
+    if (pings.length === 0) {
+      pingContainer.innerHTML = '<div style="color:var(--text-muted); font-size:12px; padding:10px;">Sub-agents will automatically ping the Lead Advisor whenever they need architectural guidance or unblocking.</div>';
+    } else {
+      pingContainer.innerHTML = '';
+      pings.forEach(p => {
+        const div = document.createElement('div');
+        div.className = 'advisor-ping-card';
+        div.innerHTML = `
+          <div style="display:flex; justify-content:space-between; align-items:center;">
+            <span style="font-size:11.5px; font-weight:800; color:#c084fc;">📡 ${escapeHtml(p.subagent)} ➔ 👑 Lead Advisor</span>
+            <span style="font-size:10.5px; font-family:monospace; color:var(--text-muted);">${escapeHtml(p.timestamp)} (${p.duration}s)</span>
+          </div>
+          <div class="advisor-ping-q">❓ "${escapeHtml(p.question)}"</div>
+          <div class="advisor-ping-a markdown-body">${parseMarkdown(p.answer)}</div>
+        `;
+        pingContainer.appendChild(div);
+      });
+    }
+  }
+
+  // Render Final Summary Artifact if complete
+  const finalSummaryDiv = document.getElementById('loopFinalSummaryContainer');
+  if (finalSummaryDiv) {
+    if (state.final_summary && state.status === 'completed') {
+      finalSummaryDiv.style.display = 'block';
+      document.getElementById('loopFinalSummaryContent').innerHTML = parseMarkdown(state.final_summary);
+    } else {
+      finalSummaryDiv.style.display = 'none';
+    }
+  }
+}
+
+function setLoopGoalPrompt(text) {
+  document.getElementById('loopGoalInput').value = text;
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -106,7 +294,6 @@ function renderStashBanner(stashes) {
     return;
   }
 
-  // Find most recent stash
   const latest = stashes[0];
   banner.style.display = 'flex';
   banner.innerHTML = `
@@ -429,17 +616,16 @@ async function ghdCheckoutBranch(branchName, create) {
 
   const cleanName = branchName.trim().replace(/^origin\//, '').replace(/^remotes\/origin\//, '');
   if (currentGhdState && currentGhdState.branch === cleanName && !create) {
-    return; // Already on this branch
+    return;
   }
 
-  // If local uncommitted changes exist, open the Stash & Switch dialog (like GitHub Desktop)
+  // If local uncommitted changes exist, open the Stash & Switch dialog
   if (currentGhdState && currentGhdState.changed_files && currentGhdState.changed_files.length > 0) {
     pendingBranchSwitch = { branch: cleanName, create: create };
     openBranchSwitchPrompt(cleanName, currentGhdState.changed_files.length);
     return;
   }
 
-  // Otherwise, clean direct checkout
   await executeDirectBranchCheckout(cleanName, create);
 }
 
@@ -512,7 +698,7 @@ async function createAndCheckoutBranch() {
 // ─────────────────────────────────────────────────────────────
 async function quickStash() {
   const msg = prompt("Enter stash message (or leave blank for automatic timestamped message):");
-  if (msg === null) return; // User cancelled
+  if (msg === null) return;
 
   try {
     const res = await fetch('/api/git/stash/save', {
@@ -667,7 +853,6 @@ async function loadWorktreesList() {
       container.appendChild(tr);
     });
 
-    // Populate branch selector in worktree creation form
     const branchSel = document.getElementById('wtBranchSelect');
     if (branchSel) {
       branchSel.innerHTML = '<option value="">Current HEAD</option>';
@@ -736,7 +921,7 @@ async function removeWorktreeAction(wtPath) {
         await loadGitHubDesktopState();
       } else {
         if (confirm(`Worktree removal failed:\n${data.stderr}\n\nForce remove?`)) {
-          const forceRes = await fetch('/api/git/worktree/remove', {
+          await fetch('/api/git/worktree/remove', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ repo_path: currentRepoPath, path: wtPath, force: true })
@@ -1290,32 +1475,35 @@ function onRepoChanged() {
   selectedGhdCommit = "";
   loadGitHubDesktopState();
   loadArtifactsVault();
+  pollLoopState();
 }
 
 const promptEl = document.getElementById('promptInput');
-promptEl.addEventListener('keydown', (e) => {
-  if (e.key === 'Enter' && !e.shiftKey) {
-    e.preventDefault();
-    submitMessage();
-    return;
-  }
-  if (promptHistory.length === 0) return;
-  if (e.key === 'ArrowUp' && (promptEl.selectionStart === 0 || promptEl.value === '')) {
-    e.preventDefault();
-    if (historyIndex === promptHistory.length) tempDraft = promptEl.value;
-    if (historyIndex > 0) { historyIndex--; promptEl.value = promptHistory[historyIndex]; }
-  } else if (e.key === 'ArrowDown') {
-    if (historyIndex < promptHistory.length - 1) {
+if (promptEl) {
+  promptEl.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
-      historyIndex++;
-      promptEl.value = promptHistory[historyIndex];
-    } else if (historyIndex === promptHistory.length - 1) {
-      e.preventDefault();
-      historyIndex = promptHistory.length;
-      promptEl.value = tempDraft;
+      submitMessage();
+      return;
     }
-  }
-});
+    if (promptHistory.length === 0) return;
+    if (e.key === 'ArrowUp' && (promptEl.selectionStart === 0 || promptEl.value === '')) {
+      e.preventDefault();
+      if (historyIndex === promptHistory.length) tempDraft = promptEl.value;
+      if (historyIndex > 0) { historyIndex--; promptEl.value = promptHistory[historyIndex]; }
+    } else if (e.key === 'ArrowDown') {
+      if (historyIndex < promptHistory.length - 1) {
+        e.preventDefault();
+        historyIndex++;
+        promptEl.value = promptHistory[historyIndex];
+      } else if (historyIndex === promptHistory.length - 1) {
+        e.preventDefault();
+        historyIndex = promptHistory.length;
+        promptEl.value = tempDraft;
+      }
+    }
+  });
+}
 
 function autoResize(el) {
   el.style.height = 'auto';

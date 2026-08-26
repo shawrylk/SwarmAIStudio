@@ -47,6 +47,14 @@ from swarm.model_scout import (
     save_model_assignments
 )
 from swarm.orchestrator import SWARM_STATE, process_advisor_chat
+from swarm.loop_engine import (
+    get_loop_state,
+    start_loop,
+    pause_loop,
+    resume_loop,
+    stop_loop,
+    ping_lead_advisor
+)
 
 MODEL_ASSIGNMENTS = load_model_assignments()
 
@@ -118,7 +126,11 @@ class SwarmHandler(BaseHTTPRequestHandler):
                 "topology": SWARM_STATE
             })
 
-        # 4. Repositories & Git Desktop Engine
+        # 4. Autonomous Loop State
+        elif parsed.path == '/api/loop/status':
+            self._send_json(get_loop_state())
+
+        # 5. Repositories & Git Desktop Engine
         elif parsed.path == '/api/repos':
             repos = find_git_repos()
             self._send_json(repos)
@@ -147,7 +159,7 @@ class SwarmHandler(BaseHTTPRequestHandler):
             repo_path = qs.get("repo_path", [""])[0]
             self._send_json({"stashes": list_stashes(repo_path)})
 
-        # 5. Multi-Chat Sessions
+        # 6. Multi-Chat Sessions
         elif parsed.path == '/api/sessions':
             self._send_json(list_sessions())
 
@@ -155,7 +167,7 @@ class SwarmHandler(BaseHTTPRequestHandler):
             sess_id = qs.get("id", [""])[0]
             self._send_json(load_session(sess_id))
 
-        # 6. Artifact Vault (Grouped by Repo)
+        # 7. Artifact Vault (Grouped by Repo)
         elif parsed.path == '/api/artifacts':
             repo_path = qs.get("repo_path", [""])[0]
             self._send_json(scan_all_artifacts(repo_path))
@@ -175,7 +187,7 @@ class SwarmHandler(BaseHTTPRequestHandler):
             else:
                 self._send_json({"error": "File not found"}, status=404)
 
-        # 7. Models Catalog & Assignments
+        # 8. Models Catalog & Assignments
         elif parsed.path == '/api/models/catalog':
             catalog = scout_all_models(force_refresh=False)
             self._send_json(catalog)
@@ -195,8 +207,37 @@ class SwarmHandler(BaseHTTPRequestHandler):
         except Exception:
             payload = {}
 
-        # 1. Chat Execution
-        if parsed.path == '/api/chat':
+        # 1. Autonomous Loop Agent Controls
+        if parsed.path == '/api/loop/start':
+            goal = payload.get("goal", "")
+            repo_path = payload.get("repo_path", "")
+            res = start_loop(goal, repo_path)
+            self._send_json(res)
+
+        elif parsed.path == '/api/loop/pause':
+            self._send_json(pause_loop())
+
+        elif parsed.path == '/api/loop/resume':
+            self._send_json(resume_loop())
+
+        elif parsed.path == '/api/loop/stop':
+            self._send_json(stop_loop())
+
+        elif parsed.path == '/api/loop/advisor_ping':
+            subagent = payload.get("subagent", "Sub-Agent")
+            role = payload.get("role", "dev")
+            question = payload.get("question", "")
+            context = payload.get("context", "")
+            
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            ans = loop.run_until_complete(ping_lead_advisor(subagent, role, question, context))
+            loop.close()
+            
+            self._send_json({"answer": ans})
+
+        # 2. Chat Execution
+        elif parsed.path == '/api/chat':
             message = payload.get("message", "")
             repo_path = payload.get("repo_path", "")
             session_id = payload.get("session_id", "")
@@ -209,7 +250,7 @@ class SwarmHandler(BaseHTTPRequestHandler):
             
             self._send_json(result)
 
-        # 2. Multi-Chat Sessions
+        # 3. Multi-Chat Sessions
         elif parsed.path == '/api/sessions/new':
             title = payload.get("title", "New Chat")
             repo_path = payload.get("repo_path", "")
@@ -229,7 +270,7 @@ class SwarmHandler(BaseHTTPRequestHandler):
             rename_session(sess_id, title)
             self._send_json({"status": "renamed"})
 
-        # 3. Git Operations with Comprehensive Debug Logging
+        # 4. Git Operations with Comprehensive Debug Logging
         elif parsed.path == '/api/git/commit':
             repo_path = payload.get("repo_path", "")
             msg = payload.get("message", "Commit via Swarm Web")
@@ -293,7 +334,7 @@ class SwarmHandler(BaseHTTPRequestHandler):
             res = remove_worktree(repo_path, wt_path, force=force)
             self._send_json(res)
 
-        # 4. Stash Endpoints
+        # 5. Stash Endpoints
         elif parsed.path == '/api/git/stash/save':
             repo_path = payload.get("repo_path", "")
             msg = payload.get("message", "")
@@ -326,7 +367,7 @@ class SwarmHandler(BaseHTTPRequestHandler):
             res = stash_and_switch_branch(repo_path, target_branch, create=create)
             self._send_json(res)
 
-        # 5. Model Scouting & Assignment
+        # 6. Model Scouting & Assignment
         elif parsed.path == '/api/models/rescout':
             catalog = scout_all_models(force_refresh=True)
             log_event("info", "model", "Rescouted models for Gemini & Qwen")

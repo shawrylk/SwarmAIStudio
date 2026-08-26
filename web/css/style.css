@@ -290,6 +290,78 @@ textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent
 .branch-item-row:hover { background: #1e293b; color: var(--accent); }
 .branch-item-row.current { color: var(--green); font-weight: 800; background: rgba(74, 222, 128, 0.1); }
 
+/* Autonomous Loop Agent Styling */
+.loop-dashboard {
+  flex: 1;
+  padding: 20px;
+  max-width: 1400px;
+  margin: 0 auto;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  overflow-y: auto;
+}
+.loop-control-card {
+  background: var(--card-bg);
+  border: 2px solid var(--accent);
+  border-radius: 12px;
+  padding: 16px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  box-shadow: 0 0 24px var(--accent-glow);
+}
+.loop-pipeline-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 14px;
+}
+.task-pipeline-card {
+  background: #090e1a;
+  border: 1.5px solid #1e293b;
+  border-radius: 10px;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  transition: all 0.2s;
+}
+.task-pipeline-card.in-progress {
+  border-color: var(--green);
+  box-shadow: 0 0 16px var(--green-glow);
+}
+.task-pipeline-card.completed {
+  border-color: #334155;
+  opacity: 0.85;
+}
+
+.advisor-ping-card {
+  background: #17132b;
+  border: 1.5px solid var(--purple);
+  border-radius: 10px;
+  padding: 12px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  box-shadow: 0 0 16px var(--purple-glow);
+  margin-bottom: 10px;
+}
+.advisor-ping-q {
+  font-family: monospace;
+  font-size: 12px;
+  color: #e9d5ff;
+  font-weight: 700;
+}
+.advisor-ping-a {
+  font-size: 12.5px;
+  color: #ffffff;
+  background: #090714;
+  padding: 8px 12px;
+  border-radius: 6px;
+  border: 1px solid #3b2d54;
+}
+
 /* Legend Card Styling */
 .legend-card {
   background: var(--card-bg);
