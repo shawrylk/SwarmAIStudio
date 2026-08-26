@@ -1,6 +1,6 @@
 /**
  * Swarm AI Studio Frontend Controller
- * Multi-Chat, GitHub Desktop, Swarm Topology & Artifact Vault
+ * Multi-Chat, Full GitHub Desktop, Worktree Manager, Grouped Artifacts & Live Debug Logs
  */
 
 let activeSessionId = "";
@@ -14,6 +14,7 @@ let selectedGhdCommit = "";
 let checkedFiles = new Set();
 let allBranches = [];
 let pollInterval = null;
+let debugPollInterval = null;
 let currentModalContent = "";
 let currentModalFilename = "";
 
@@ -81,7 +82,9 @@ async function loadGitHubDesktopState() {
     renderChangesList(data.changed_files || []);
     renderHistoryList(data.history || []);
 
-  } catch(e) {}
+  } catch(e) {
+    console.error("Error loading GitHub Desktop state:", e);
+  }
 }
 
 function renderChangesList(files) {
@@ -101,7 +104,7 @@ function renderChangesList(files) {
   files.forEach(f => checkedFiles.add(f.path));
   updateSelectedCount();
 
-  files.forEach((f, idx) => {
+  files.forEach((f) => {
     const row = document.createElement('div');
     row.className = `ghd-file-row ${f.path === selectedGhdFile ? 'selected' : ''}`;
     row.onclick = () => selectFileForDiff(f.path, f.staged);
@@ -210,7 +213,7 @@ async function discardSelectedFile() {
         selectedGhdFile = "";
         await loadGitHubDesktopState();
       } else {
-        alert("Discard error: " + data.stderr);
+        alert("Discard error:\n" + (data.stderr || data.error));
       }
     } catch(e) { alert("Error: " + e.message); }
   }
@@ -237,7 +240,7 @@ async function ghdCommit() {
       selectedGhdFile = "";
       await loadGitHubDesktopState();
     } else {
-      alert("Commit error: " + (data.stderr || data.error));
+      alert("Commit error:\n" + (data.stderr || data.error));
     }
   } catch(e) { alert("Error: " + e.message); }
 }
@@ -253,8 +256,9 @@ async function ghdPush() {
     });
     const data = await res.json();
     await loadGitHubDesktopState();
+    btn.innerText = `⬆️ Push ${currentGhdState ? currentGhdState.ahead : 0}`;
     if (data.success) alert("✓ Pushed to remote successfully!");
-    else alert("Push info: " + (data.stderr || data.stdout));
+    else alert("Push details:\n" + (data.stderr || data.stdout || data.error));
   } catch(e) { alert("Push error: " + e.message); }
 }
 
@@ -267,7 +271,8 @@ async function ghdPull() {
     });
     const data = await res.json();
     await loadGitHubDesktopState();
-    alert("Pull result: " + (data.stdout || data.stderr));
+    if (data.success) alert("✓ Pull complete:\n" + (data.stdout || "Already up to date."));
+    else alert("Pull error:\n" + (data.stderr || data.error));
   } catch(e) { alert("Pull error: " + e.message); }
 }
 
@@ -279,7 +284,7 @@ async function ghdFetch() {
       body: JSON.stringify({ repo_path: currentRepoPath })
     });
     await loadGitHubDesktopState();
-    alert("✓ Remote repository fetched!");
+    alert("✓ Remote repository fetched successfully!");
   } catch(e) { alert("Fetch error: " + e.message); }
 }
 
@@ -342,7 +347,8 @@ function toggleBranchModal() {
 
 document.addEventListener('click', (e) => {
   const m = document.getElementById('branchModal');
-  if (m && !m.contains(e.target) && !document.getElementById('ghdBranchBtn').contains(e.target)) {
+  const btn = document.getElementById('ghdBranchBtn');
+  if (m && btn && !m.contains(e.target) && !btn.contains(e.target)) {
     m.className = 'branch-modal';
   }
 });
@@ -352,17 +358,22 @@ function renderBranchModalList(branches, currentBranch) {
   scroll.innerHTML = '';
   
   branches.forEach(b => {
+    const bName = typeof b === 'string' ? b : b.name;
+    const isCurrent = (bName === currentBranch);
     const row = document.createElement('div');
-    row.className = `branch-item-row ${b === currentBranch ? 'current' : ''}`;
-    row.onclick = () => ghdCheckoutBranch(b, false);
-    row.innerHTML = `<span>🌿 ${escapeHtml(b)}</span> ${b === currentBranch ? '<span>✓</span>' : ''}`;
+    row.className = `branch-item-row ${isCurrent ? 'current' : ''}`;
+    row.onclick = () => ghdCheckoutBranch(bName, false);
+    row.innerHTML = `<span>🌿 ${escapeHtml(bName)}</span> ${isCurrent ? '<span style="color:var(--green); font-weight:800;">✓ Current</span>' : ''}`;
     scroll.appendChild(row);
   });
 }
 
 function filterBranches(val) {
   const query = val.toLowerCase();
-  const filtered = allBranches.filter(b => b.toLowerCase().includes(query));
+  const filtered = allBranches.filter(b => {
+    const name = typeof b === 'string' ? b : b.name;
+    return name.toLowerCase().includes(query);
+  });
   renderBranchModalList(filtered, currentGhdState ? currentGhdState.branch : "");
 }
 
@@ -375,10 +386,11 @@ async function ghdCheckoutBranch(branchName, create) {
     });
     const data = await res.json();
     document.getElementById('branchModal').className = 'branch-modal';
+    
     if (data.success) {
       await loadGitHubDesktopState();
     } else {
-      alert("Branch error: " + (data.stderr || data.error));
+      alert(`⚠️ Branch action failed:\n\n${data.stderr || data.error || 'Unknown error'}\n\nTip: If you have uncommitted changes conflicting with this branch, commit or stash them first.`);
     }
   } catch(e) { alert("Error: " + e.message); }
 }
@@ -386,7 +398,7 @@ async function ghdCheckoutBranch(branchName, create) {
 async function createAndCheckoutBranch() {
   const input = document.getElementById('branchSearchInput').value.trim();
   if (!input) {
-    alert("Type a new branch name in the search box first.");
+    alert("Please type a new branch name in the search box first.");
     return;
   }
   await ghdCheckoutBranch(input, true);
@@ -402,27 +414,134 @@ async function openStashModal() {
         body: JSON.stringify({ repo_path: currentRepoPath, message: msg })
       });
       await loadGitHubDesktopState();
-      alert("✓ Stash created!");
+      alert("✓ Stash created successfully!");
     } catch(e) { alert("Error: " + e.message); }
   }
 }
 
+// ─────────────────────────────────────────────────────────────
+// WORKTREE MANAGER (LIST, CREATE, REMOVE LIKE GITHUB DESKTOP)
+// ─────────────────────────────────────────────────────────────
 async function openWorktreeModal() {
-  const path = prompt("Enter worktree directory path (e.g. ../worktree-feature):");
-  if (path) {
-    const branch = prompt("Enter branch name for worktree (optional):") || "";
+  document.getElementById('worktreeModal').className = 'modal-overlay active';
+  await loadWorktreesList();
+}
+
+function closeWorktreeModal() {
+  document.getElementById('worktreeModal').className = 'modal-overlay';
+}
+
+async function loadWorktreesList() {
+  const container = document.getElementById('worktreesTableBody');
+  container.innerHTML = '<tr><td colspan="4" style="text-align:center; padding:16px; color:var(--text-muted);">Loading active worktrees...</td></tr>';
+  
+  try {
+    const res = await fetch(`/api/git/worktrees?repo_path=${encodeURIComponent(currentRepoPath)}`, { cache: 'no-store' });
+    const data = await res.json();
+    const wts = data.worktrees || [];
+
+    container.innerHTML = '';
+    if (wts.length === 0) {
+      container.innerHTML = '<tr><td colspan="4" style="text-align:center; padding:16px; color:var(--text-muted);">No isolated worktrees found.</td></tr>';
+      return;
+    }
+
+    wts.forEach(wt => {
+      const tr = document.createElement('tr');
+      const isMain = wt.is_main;
+      tr.innerHTML = `
+        <td style="padding:10px 14px; font-family:monospace; color:#ffffff; font-weight:700;">
+          ${isMain ? '👑 Main Repository' : '🌳 ' + escapeHtml(wt.display_path || wt.path)}
+          ${isMain ? '<span class="file-status-badge status-a" style="margin-left:6px;">MAIN</span>' : ''}
+        </td>
+        <td style="padding:10px 14px; font-family:monospace; color:var(--accent);">🌿 ${escapeHtml(wt.branch || 'detached')}</td>
+        <td style="padding:10px 14px; font-family:monospace; color:var(--text-muted); font-size:12px;">${escapeHtml(wt.commit || '')}</td>
+        <td style="padding:10px 14px; text-align:right;">
+          ${isMain ? '<span style="color:var(--text-muted); font-size:11px;">Primary</span>' : `
+            <button class="action-btn danger" onclick="removeWorktreeAction('${escapeJs(wt.path)}')">🗑️ Remove</button>
+          `}
+        </td>
+      `;
+      container.appendChild(tr);
+    });
+
+    // Populate branch selector in worktree creation form
+    const branchSel = document.getElementById('wtBranchSelect');
+    if (branchSel) {
+      branchSel.innerHTML = '<option value="">Current HEAD</option>';
+      allBranches.forEach(b => {
+        const bName = typeof b === 'string' ? b : b.name;
+        const opt = document.createElement('option');
+        opt.value = bName;
+        opt.innerText = `🌿 ${bName}`;
+        branchSel.appendChild(opt);
+      });
+    }
+
+  } catch(e) {
+    container.innerHTML = `<tr><td colspan="4" style="color:var(--rose); padding:16px;">Error loading worktrees: ${escapeHtml(e.message)}</td></tr>`;
+  }
+}
+
+async function addWorktreeFromModal() {
+  const dirPath = document.getElementById('wtPathInput').value.trim();
+  const branchName = document.getElementById('wtBranchSelect').value;
+  const newBranchName = document.getElementById('wtNewBranchInput').value.trim();
+  const isNewBranch = Boolean(newBranchName);
+
+  if (!dirPath) {
+    alert("Please specify a directory path for the new worktree.");
+    return;
+  }
+
+  const targetBranch = isNewBranch ? newBranchName : branchName;
+
+  try {
+    const res = await fetch('/api/git/worktree/add', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        repo_path: currentRepoPath,
+        path: dirPath,
+        branch: targetBranch,
+        new_branch: isNewBranch
+      })
+    });
+    const data = await res.json();
+    if (data.success) {
+      document.getElementById('wtPathInput').value = '';
+      document.getElementById('wtNewBranchInput').value = '';
+      await loadWorktreesList();
+      await loadGitHubDesktopState();
+      alert("✓ Worktree created successfully!");
+    } else {
+      alert("Worktree creation failed:\n\n" + (data.stderr || data.error));
+    }
+  } catch(e) { alert("Error: " + e.message); }
+}
+
+async function removeWorktreeAction(wtPath) {
+  if (confirm(`Remove worktree at ${wtPath}?`)) {
     try {
-      const res = await fetch('/api/git/worktree/add', {
+      const res = await fetch('/api/git/worktree/remove', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ repo_path: currentRepoPath, path: path, branch: branch })
+        body: JSON.stringify({ repo_path: currentRepoPath, path: wtPath, force: false })
       });
       const data = await res.json();
       if (data.success) {
-        alert("✓ Worktree created successfully!");
+        await loadWorktreesList();
         await loadGitHubDesktopState();
       } else {
-        alert("Worktree error: " + data.stderr);
+        if (confirm(`Worktree removal failed:\n${data.stderr}\n\nForce remove?`)) {
+          const forceRes = await fetch('/api/git/worktree/remove', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ repo_path: currentRepoPath, path: wtPath, force: true })
+          });
+          await loadWorktreesList();
+          await loadGitHubDesktopState();
+        }
       }
     } catch(e) { alert("Error: " + e.message); }
   }
@@ -579,63 +698,83 @@ async function loadActiveSessionMessages() {
 }
 
 // ─────────────────────────────────────────────────────────────
-// Repos & Artifact Vault
+// GROUPED ARTIFACTS VAULT
 // ─────────────────────────────────────────────────────────────
-async function loadRepos() {
-  try {
-    const res = await fetch('/api/repos', { cache: 'no-store' });
-    const repos = await res.json();
-    const sel = document.getElementById('repoSelect');
-    sel.innerHTML = '';
-    
-    if (!repos || repos.length === 0) {
-      sel.innerHTML = '<option value="">No Git repos found</option>';
-      return;
-    }
-
-    repos.forEach(r => {
-      const opt = document.createElement('option');
-      opt.value = r.path;
-      opt.innerText = `${r.name}`;
-      sel.appendChild(opt);
-    });
-
-    currentRepoPath = repos[0].path;
-  } catch(e) {
-    document.getElementById('repoSelect').innerHTML = '<option value="">(Repos loaded)</option>';
-  }
-}
-
 async function loadArtifactsVault() {
   try {
     const res = await fetch(`/api/artifacts?repo_path=${encodeURIComponent(currentRepoPath)}`, { cache: 'no-store' });
-    const list = await res.json();
-    const tbody = document.getElementById('vaultTableBody');
-    tbody.innerHTML = '';
+    const data = await res.json();
+    const container = document.getElementById('groupedArtifactsContainer');
+    container.innerHTML = '';
 
-    if (!list || list.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="5" style="text-align:center; color:var(--text-muted); padding:16px;">No artifacts generated yet.</td></tr>';
+    const groups = data.groups || [];
+    if (groups.length === 0) {
+      container.innerHTML = '<div style="text-align:center; color:var(--text-muted); padding:30px;">No artifacts generated yet.</div>';
       return;
     }
 
-    list.forEach(art => {
-      const tr = document.createElement('tr');
-      const sizeKb = (art.size / 1024).toFixed(1) + ' KB';
-      tr.innerHTML = `
-        <td style="font-weight:700; color:#ffffff; padding:12px 16px;">📄 ${escapeHtml(art.name)}</td>
-        <td style="padding:12px 16px;"><span class="file-status-badge status-u">${escapeHtml(art.type)}</span></td>
-        <td style="font-family:monospace; color:var(--text-muted); padding:12px 16px;">${sizeKb}</td>
-        <td style="font-family:monospace; color:var(--text-muted); font-size:12px; padding:12px 16px;">${escapeHtml(art.modified)}</td>
-        <td style="padding:12px 16px;">
-          <div style="display:flex; gap:6px;">
-            <button class="action-btn" onclick="openRemoteArtifact('${escapeJs(art.path)}', '${escapeJs(art.name)}')">👁️ Read</button>
-            <button class="action-btn" onclick="downloadArtifactFile('${escapeJs(art.path)}', '${escapeJs(art.name)}')">⬇️ Download</button>
+    groups.forEach(grp => {
+      const card = document.createElement('div');
+      card.className = 'repo-artifact-group';
+
+      let rowsHtml = '';
+      grp.artifacts.forEach(art => {
+        const sizeKb = (art.size / 1024).toFixed(1) + ' KB';
+        rowsHtml += `
+          <tr style="border-bottom:1px solid #1a2538;">
+            <td style="padding:10px 16px; font-weight:700; color:#ffffff;">📄 ${escapeHtml(art.name)}</td>
+            <td style="padding:10px 16px;"><span class="file-status-badge status-u">${escapeHtml(art.type)}</span></td>
+            <td style="padding:10px 16px; font-family:monospace; color:var(--text-muted); font-size:12px;">${sizeKb}</td>
+            <td style="padding:10px 16px; font-family:monospace; color:var(--text-muted); font-size:12px;">${escapeHtml(art.modified)}</td>
+            <td style="padding:10px 16px; text-align:right;">
+              <div style="display:inline-flex; gap:6px;">
+                <button class="action-btn" onclick="openRemoteArtifact('${escapeJs(art.path)}', '${escapeJs(art.name)}')">👁️ Read</button>
+                <button class="action-btn" onclick="downloadArtifactFile('${escapeJs(art.path)}', '${escapeJs(art.name)}')">⬇️ Download</button>
+              </div>
+            </td>
+          </tr>
+        `;
+      });
+
+      card.innerHTML = `
+        <div class="repo-group-header" onclick="toggleArtifactGroup('${escapeJs(grp.repo_name)}')">
+          <div class="repo-group-title">
+            <span>📁 Repository: <b>${escapeHtml(grp.repo_name)}</b></span>
+            <span class="file-status-badge status-a">${grp.count} Document${grp.count === 1 ? '' : 's'}</span>
           </div>
-        </td>
+          <span id="group-icon-${escapeJs(grp.repo_name)}" style="color:var(--accent); font-weight:800;">▾</span>
+        </div>
+        <div id="group-body-${escapeJs(grp.repo_name)}" style="display:block;">
+          <table style="width:100%; border-collapse:collapse; background:#070a12;">
+            <thead>
+              <tr style="background:#090d16; border-bottom:1px solid #1e293b; color:#93c5fd; font-size:11.5px; text-align:left;">
+                <th style="padding:8px 16px;">Document Name</th>
+                <th style="padding:8px 16px;">Type</th>
+                <th style="padding:8px 16px;">Size</th>
+                <th style="padding:8px 16px;">Modified</th>
+                <th style="padding:8px 16px; text-align:right;">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${rowsHtml}
+            </tbody>
+          </table>
+        </div>
       `;
-      tbody.appendChild(tr);
+      container.appendChild(card);
     });
+
   } catch(e) {}
+}
+
+function toggleArtifactGroup(groupName) {
+  const body = document.getElementById(`group-body-${groupName}`);
+  const icon = document.getElementById(`group-icon-${groupName}`);
+  if (body) {
+    const isHidden = (body.style.display === 'none');
+    body.style.display = isHidden ? 'block' : 'none';
+    if (icon) icon.innerText = isHidden ? '▾' : '▸';
+  }
 }
 
 async function openRemoteArtifact(filepath, filename) {
@@ -663,7 +802,7 @@ async function openRemoteArtifact(filepath, filename) {
   }
 }
 
-function closeArtifactModal(e) {
+function closeArtifactModal() {
   document.getElementById('artifactModal').className = 'modal-overlay';
 }
 
@@ -687,6 +826,75 @@ function downloadBlob(text, filename) {
   a.click();
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
+}
+
+// ─────────────────────────────────────────────────────────────
+// LIVE DEBUG LOGS DRAWER
+// ─────────────────────────────────────────────────────────────
+function toggleDebugDrawer() {
+  const drawer = document.getElementById('debugDrawer');
+  const isActive = drawer.className.includes('active');
+  drawer.className = isActive ? 'debug-drawer' : 'debug-drawer active';
+  if (!isActive) {
+    fetchLiveDebugLogs();
+    if (!debugPollInterval) debugPollInterval = setInterval(fetchLiveDebugLogs, 1500);
+  } else {
+    if (debugPollInterval) { clearInterval(debugPollInterval); debugPollInterval = null; }
+  }
+}
+
+async function fetchLiveDebugLogs() {
+  try {
+    const res = await fetch('/api/debug/logs?limit=40', { cache: 'no-store' });
+    const data = await res.json();
+    const list = document.getElementById('debugLogList');
+    list.innerHTML = '';
+
+    (data.logs || []).forEach(log => {
+      const div = document.createElement('div');
+      const lvl = (log.level || 'INFO').toLowerCase();
+      div.className = `debug-log-entry ${lvl === 'error' ? 'error' : (lvl === 'warn' ? 'warn' : '')}`;
+      div.innerHTML = `
+        <div><span style="color:var(--text-muted);">[${escapeHtml(log.timestamp)}]</span> <b style="color:var(--accent);">[${escapeHtml(log.category)}]</b> ${escapeHtml(log.action)}</div>
+        ${log.error ? `<div style="color:#fca5a5; font-size:11px; margin-top:2px;">↳ ${escapeHtml(log.error)}</div>` : ''}
+      `;
+      list.appendChild(div);
+    });
+
+    list.scrollTop = list.scrollHeight;
+  } catch(e) {}
+}
+
+async function clearDebugLogs() {
+  document.getElementById('debugLogList').innerHTML = '<div style="color:var(--text-muted); padding:10px;">Logs cleared in viewer.</div>';
+}
+
+// ─────────────────────────────────────────────────────────────
+// Initial Load & Repos
+// ─────────────────────────────────────────────────────────────
+async function loadRepos() {
+  try {
+    const res = await fetch('/api/repos', { cache: 'no-store' });
+    const repos = await res.json();
+    const sel = document.getElementById('repoSelect');
+    sel.innerHTML = '';
+    
+    if (!repos || repos.length === 0) {
+      sel.innerHTML = '<option value="">No Git repos found</option>';
+      return;
+    }
+
+    repos.forEach(r => {
+      const opt = document.createElement('option');
+      opt.value = r.path;
+      opt.innerText = `${r.name}`;
+      sel.appendChild(opt);
+    });
+
+    currentRepoPath = repos[0].path;
+  } catch(e) {
+    document.getElementById('repoSelect').innerHTML = '<option value="">(Repos loaded)</option>';
+  }
 }
 
 async function loadModelCatalogAndAssignments() {

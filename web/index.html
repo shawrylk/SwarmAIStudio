@@ -71,9 +71,10 @@
             <div class="markdown-body">
               <p>Welcome to <b>Swarm AI Studio</b> with complete <b>GitHub Desktop</b> integration:</p>
               <ul>
-                <li><b>🌿 Complete GitHub Desktop Suite:</b> Click the <b>"🌿 GitHub Desktop"</b> tab to inspect diffs, stage files, commit, push, switch/create branches, manage stashes, and view full visual commit history!</li>
+                <li><b>🌿 Complete GitHub Desktop Suite:</b> Click the <b>"🌿 GitHub Desktop"</b> tab to inspect diffs, stage files, commit, push, switch/create branches, manage worktrees & stashes, and view full visual commit history!</li>
                 <li><b>🎯 Task-Aware Dynamic Swarm:</b> Analyzes task complexity and dynamically scales 1 to 8 GPU slots with tailored skills.</li>
                 <li><b>💬 Multi-Chat Persistence:</b> Create and switch between independent sessions on the left sidebar.</li>
+                <li><b>📁 Grouped Artifacts:</b> Reports and artifacts are organized by repository.</li>
               </ul>
             </div>
           </div>
@@ -119,7 +120,7 @@
 
             <!-- Branch Switcher Dropdown Modal -->
             <div class="branch-modal" id="branchModal" onclick="event.stopPropagation()">
-              <input class="branch-search-input" id="branchSearchInput" placeholder="Filter or create branch..." oninput="filterBranches(this.value)">
+              <input class="branch-search-input" id="branchSearchInput" placeholder="Filter or type new branch name..." oninput="filterBranches(this.value)">
               <div class="branch-list-scroll" id="branchListScroll">
                 <!-- Branches populated here -->
               </div>
@@ -135,7 +136,7 @@
             <button class="action-btn" onclick="ghdPull()" id="ghdPullBtn">⬇️ Pull <span id="ghdBehindCount">0</span></button>
             <button class="ghd-sync-btn" onclick="ghdPush()" id="ghdPushBtn">⬆️ Push <span id="ghdAheadCount">0</span></button>
             <button class="action-btn" onclick="openStashModal()">📦 Stash</button>
-            <button class="action-btn" onclick="openWorktreeModal()">🌳 Worktree</button>
+            <button class="action-btn" onclick="openWorktreeModal()">🌳 Worktree Manager</button>
           </div>
         </div>
 
@@ -490,38 +491,87 @@
       </div>
     </div>
 
-    <!-- TAB 4: ARTIFACTS VAULT -->
+    <!-- TAB 4: GROUPED ARTIFACTS VAULT -->
     <div class="tab-content" id="tabVault">
       <div style="flex:1; padding:20px; max-width:1200px; margin:0 auto; width:100%; display:flex; flex-direction:column; gap:14px;">
         <div style="display:flex; justify-content:space-between; align-items:center; background:#0f172a; border:2px solid #334155; border-radius:10px; padding:12px 20px;">
           <div>
             <div style="font-weight:800; color:#ffffff; font-size:15px;">📁 Remote Artifact Vault & Report Browser</div>
-            <div style="font-size:12.5px; color:#cbd5e1;">Read, copy, and download any generated document directly over HTTP from any PC.</div>
+            <div style="font-size:12.5px; color:#cbd5e1;">All reports and blueprints are automatically grouped and categorized by Repository.</div>
           </div>
           <button class="action-btn" onclick="loadArtifactsVault()" style="border-color:var(--accent); color:var(--accent); font-weight:700;">🔄 Refresh Vault</button>
         </div>
 
-        <table style="width:100%; border-collapse:collapse; background:var(--card-bg); border:1.5px solid var(--card-border); border-radius:10px; overflow:hidden;">
-          <thead>
-            <tr style="background:#0b1120; border-bottom:1px solid #232f48;">
-              <th style="padding:12px 16px; text-align:left; color:#93c5fd; font-weight:800; font-size:12.5px;">Document Name</th>
-              <th style="padding:12px 16px; text-align:left; color:#93c5fd; font-weight:800; font-size:12.5px;">Type</th>
-              <th style="padding:12px 16px; text-align:left; color:#93c5fd; font-weight:800; font-size:12.5px;">Size</th>
-              <th style="padding:12px 16px; text-align:left; color:#93c5fd; font-weight:800; font-size:12.5px;">Last Modified</th>
-              <th style="padding:12px 16px; text-align:left; color:#93c5fd; font-weight:800; font-size:12.5px;">Actions</th>
-            </tr>
-          </thead>
-          <tbody id="vaultTableBody">
-            <tr><td colspan="5" style="text-align:center; color:var(--text-muted); padding:16px;">Loading artifacts...</td></tr>
-          </tbody>
-        </table>
+        <div id="groupedArtifactsContainer">
+          <!-- Populated dynamically with repository group accordion cards -->
+        </div>
       </div>
     </div>
 
   </div>
 
+  <!-- WORKTREE MANAGER MODAL (LIKE GITHUB DESKTOP) -->
+  <div class="modal-overlay" id="worktreeModal" onclick="closeWorktreeModal()">
+    <div class="modal-box" onclick="event.stopPropagation()" style="width:850px;">
+      <div class="modal-header">
+        <span>🌳 Git Worktree Manager (Isolated Workspaces)</span>
+        <button class="action-btn" onclick="closeWorktreeModal()">✕ Close</button>
+      </div>
+      <div class="modal-body" style="display:flex; flex-direction:column; gap:18px;">
+        
+        <!-- Active Worktrees Table -->
+        <div>
+          <div style="font-weight:800; color:#ffffff; font-size:13.5px; margin-bottom:8px;">Active Worktrees for Repository</div>
+          <table style="width:100%; border-collapse:collapse; background:#0b1222; border:1px solid #1e293b; border-radius:8px; overflow:hidden;">
+            <thead>
+              <tr style="background:#090d16; border-bottom:1px solid #1e293b; color:#93c5fd; font-size:11.5px; text-align:left;">
+                <th style="padding:10px 14px;">Directory Path</th>
+                <th style="padding:10px 14px;">Branch</th>
+                <th style="padding:10px 14px;">Commit</th>
+                <th style="padding:10px 14px; text-align:right;">Action</th>
+              </tr>
+            </thead>
+            <tbody id="worktreesTableBody">
+              <!-- Populated dynamically -->
+            </tbody>
+          </table>
+        </div>
+
+        <!-- Create New Worktree Section -->
+        <div style="background:#0b1222; border:1.5px solid #1e293b; border-radius:8px; padding:16px; display:flex; flex-direction:column; gap:12px;">
+          <div style="font-weight:800; color:var(--accent); font-size:13.5px;">+ Create New Worktree</div>
+          
+          <div style="display:grid; grid-template-columns: 1fr 1fr; gap:12px;">
+            <div>
+              <label style="font-size:11px; color:#cbd5e1; font-weight:700; display:block; margin-bottom:4px;">Worktree Directory Path (relative or absolute):</label>
+              <input class="git-input" id="wtPathInput" placeholder="../worktree-feature-x" style="width:100%;">
+            </div>
+            <div>
+              <label style="font-size:11px; color:#cbd5e1; font-weight:700; display:block; margin-bottom:4px;">Select Existing Branch:</label>
+              <select class="git-input" id="wtBranchSelect" style="width:100%;">
+                <option value="">Current HEAD</option>
+              </select>
+            </div>
+          </div>
+
+          <div>
+            <label style="font-size:11px; color:#cbd5e1; font-weight:700; display:block; margin-bottom:4px;">Or Create New Branch for Worktree:</label>
+            <input class="git-input" id="wtNewBranchInput" placeholder="feature/new-isolated-branch" style="width:100%;">
+          </div>
+
+          <div style="display:flex; justify-content:flex-end;">
+            <button class="action-btn" onclick="addWorktreeFromModal()" style="background:#16a34a; color:#ffffff; font-weight:800; border:none; padding:8px 16px;">
+              🌳 Add & Checkout Worktree
+            </button>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
   <!-- In-Page Artifact Modal Reader -->
-  <div class="modal-overlay" id="artifactModal" onclick="closeArtifactModal(event)">
+  <div class="modal-overlay" id="artifactModal" onclick="closeArtifactModal()">
     <div class="modal-box" onclick="event.stopPropagation()">
       <div class="modal-header">
         <span id="modalDocTitle">📄 Document Viewer</span>
@@ -534,6 +584,21 @@
       <div class="modal-body markdown-body" id="modalDocContent">
         Loading document content...
       </div>
+    </div>
+  </div>
+
+  <!-- FLOATING DEBUG LOGS DRAWER & BUTTON -->
+  <button class="debug-toggle-btn" onclick="toggleDebugDrawer()">🐞 Live Logs</button>
+  <div class="debug-drawer" id="debugDrawer">
+    <div class="debug-header">
+      <span>🐞 Activity & Action Diagnostics</span>
+      <div style="display:flex; gap:6px;">
+        <button class="action-btn" onclick="clearDebugLogs()" style="font-size:11px; padding:2px 8px;">Clear</button>
+        <button class="action-btn" onclick="toggleDebugDrawer()" style="font-size:11px; padding:2px 8px;">✕</button>
+      </div>
+    </div>
+    <div class="debug-log-list" id="debugLogList">
+      <!-- Live logs populated dynamically -->
     </div>
   </div>
 

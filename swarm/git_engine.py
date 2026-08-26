@@ -1,36 +1,68 @@
 """
 Full GitHub Desktop Engine for Swarm AI Studio
-Provides 100% mouse-driven operations:
-- Branches (switch, filter, create, delete)
+Provides 100% mouse-driven operations with comprehensive action logging:
+- Branches (switch, filter, create, delete, track remote)
 - Staging & Commit box with summary and description
 - Ahead/Behind commit synchronization (Fetch, Pull, Push)
 - Unified colored diffs for modified & untracked files
-- Worktrees and Stash management
-- Rich commit history inspection
+- Worktrees Manager (List, Create, Remove)
+- Stash Manager (Save, Apply, Pop, Drop)
+- History inspection with file breakdown
 """
 
 import os
 import subprocess
+import time
 from pathlib import Path
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
+from swarm.logger import log_event
 
 def run_git(repo_path: str, args: List[str]) -> Dict[str, Any]:
     if not repo_path:
-        return {"success": False, "error": "No repository selected"}
+        log_event("error", "git", "Execution failed: No repository path provided")
+        return {"success": False, "error": "No repository selected", "stderr": "No repository path provided"}
+    
     rp = Path(repo_path)
     if not rp.exists() or not (rp / ".git").exists():
-        return {"success": False, "error": f"Path is not a valid Git repository: {repo_path}"}
+        err_msg = f"Path is not a valid Git repository: {repo_path}"
+        log_event("error", "git", err_msg)
+        return {"success": False, "error": err_msg, "stderr": err_msg}
+    
+    t0 = time.time()
+    cmd = ["git", "-C", str(rp)] + args
     try:
-        cmd = ["git", "-C", str(rp)] + args
         res = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-        return {
-            "success": res.returncode == 0,
-            "stdout": res.stdout.strip(),
-            "stderr": res.stderr.strip(),
-            "returncode": res.returncode
+        dur = round((time.time() - t0) * 1000, 1)
+        
+        details = {
+            "cmd": " ".join(cmd),
+            "repo": rp.name,
+            "returncode": res.returncode,
+            "duration_ms": dur
         }
+        
+        if res.returncode == 0:
+            log_event("info", "git", f"git {' '.join(args)} (took {dur}ms)", details)
+            return {
+                "success": True,
+                "stdout": res.stdout.strip(),
+                "stderr": res.stderr.strip(),
+                "returncode": res.returncode
+            }
+        else:
+            log_event("warn", "git", f"git {' '.join(args)} failed (code {res.returncode})", details, error=res.stderr.strip())
+            return {
+                "success": False,
+                "stdout": res.stdout.strip(),
+                "stderr": res.stderr.strip(),
+                "returncode": res.returncode,
+                "error": res.stderr.strip() or f"Git command failed with code {res.returncode}"
+            }
     except Exception as e:
-        return {"success": False, "error": str(e)}
+        dur = round((time.time() - t0) * 1000, 1)
+        err_str = str(e)
+        log_event("error", "git", f"Exception running git {' '.join(args)}", {"cmd": " ".join(cmd), "duration_ms": dur}, error=err_str)
+        return {"success": False, "error": err_str, "stderr": err_str}
 
 def find_git_repos() -> List[Dict[str, str]]:
     repos = []
@@ -129,27 +161,11 @@ def get_full_github_desktop_state(repo_path: str) -> Dict[str, Any]:
                     "subject": parts[4]
                 })
 
-    # 4. Branch List
-    branches_res = run_git(repo_path, ["branch", "-a"])
-    branches = []
-    if branches_res["success"]:
-        for b in branches_res["stdout"].split("\n"):
-            clean_b = b.replace("*", "").strip()
-            if clean_b and not clean_b.startswith("remotes/origin/HEAD"):
-                branches.append(clean_b)
+    # 4. Branch List (Local + Remotes formatted cleanly)
+    branches = get_clean_branches(repo_path)
 
     # 5. Worktrees
-    worktrees_res = run_git(repo_path, ["worktree", "list"])
-    worktrees = []
-    if worktrees_res["success"]:
-        for wt in worktrees_res["stdout"].split("\n"):
-            if wt.strip():
-                parts = wt.split()
-                worktrees.append({
-                    "path": parts[0] if len(parts) > 0 else "",
-                    "commit": parts[1] if len(parts) > 1 else "",
-                    "branch": parts[2].replace("[", "").replace("]", "") if len(parts) > 2 else ""
-                })
+    worktrees = list_worktrees(repo_path)
 
     # 6. Stashes
     stash_res = run_git(repo_path, ["stash", "list"])
@@ -173,6 +189,172 @@ def get_full_github_desktop_state(repo_path: str) -> Dict[str, Any]:
         "worktrees": worktrees,
         "stashes": stashes
     }
+
+def get_clean_branches(repo_path: str) -> List[Dict[str, Any]]:
+    """Returns unique, clean branch names separating local and remote branches."""
+    res = run_git(repo_path, ["branch", "-a", "--format=%(refname:short)|%(upstream:short)|%(HEAD)"])
+    branches = []
+    seen = set()
+
+    if res["success"] and res["stdout"]:
+        for line in res["stdout"].split("\n"):
+            if not line.strip():
+                continue
+            parts = line.strip().split("|")
+            b_name = parts[0].strip()
+            is_head = len(parts) > 2 and parts[2].strip() == "*"
+            
+            # Clean remote prefix
+            clean_name = b_name
+            is_remote = False
+            if clean_name.startswith("origin/"):
+                clean_name = clean_name.replace("origin/", "", 1)
+                is_remote = True
+            elif clean_name.startswith("remotes/origin/"):
+                clean_name = clean_name.replace("remotes/origin/", "", 1)
+                is_remote = True
+
+            if clean_name and clean_name != "HEAD" and clean_name not in seen:
+                branches.append({
+                    "name": clean_name,
+                    "ref": b_name,
+                    "is_current": is_head,
+                    "is_remote": is_remote
+                })
+                seen.add(clean_name)
+    
+    if not branches:
+        branches.append({"name": "main", "ref": "main", "is_current": True, "is_remote": False})
+    return branches
+
+def switch_or_create_branch(repo_path: str, branch_name: str, create: bool = False, start_point: str = "") -> Dict[str, Any]:
+    """Robust branch checkout and creation handling local, remote, and new branches."""
+    clean_name = branch_name.strip()
+    if clean_name.startswith("origin/"):
+        clean_name = clean_name.replace("origin/", "", 1)
+    elif clean_name.startswith("remotes/origin/"):
+        clean_name = clean_name.replace("remotes/origin/", "", 1)
+
+    if not clean_name:
+        return {"success": False, "error": "Branch name cannot be empty."}
+
+    # 1. If explicit create requested
+    if create:
+        args = ["checkout", "-b", clean_name]
+        if start_point:
+            args.append(start_point)
+        res = run_git(repo_path, args)
+        log_event("info" if res["success"] else "warn", "branch", f"Create branch '{clean_name}'", {"create": True}, error=res.get("error", ""))
+        return res
+
+    # 2. Check if branch exists locally
+    local_check = run_git(repo_path, ["show-ref", "--verify", f"refs/heads/{clean_name}"])
+    if local_check["success"]:
+        res = run_git(repo_path, ["checkout", clean_name])
+        log_event("info" if res["success"] else "warn", "branch", f"Checkout local branch '{clean_name}'", error=res.get("error", ""))
+        return res
+
+    # 3. Check if remote tracking branch exists
+    remote_check = run_git(repo_path, ["show-ref", "--verify", f"refs/remotes/origin/{clean_name}"])
+    if remote_check["success"]:
+        res = run_git(repo_path, ["checkout", "-b", clean_name, "--track", f"origin/{clean_name}"])
+        log_event("info" if res["success"] else "warn", "branch", f"Checkout remote tracking branch 'origin/{clean_name}'", error=res.get("error", ""))
+        return res
+
+    # 4. Standard checkout attempt
+    res = run_git(repo_path, ["checkout", clean_name])
+    log_event("info" if res["success"] else "warn", "branch", f"Checkout '{clean_name}'", error=res.get("error", ""))
+    return res
+
+# ─────────────────────────────────────────────────────────────
+# Complete Worktree Subsystem
+# ─────────────────────────────────────────────────────────────
+def list_worktrees(repo_path: str) -> List[Dict[str, Any]]:
+    """Lists all worktrees with branch, path, commit hash, and main repo indicator."""
+    res = run_git(repo_path, ["worktree", "list", "--porcelain"])
+    worktrees = []
+    
+    if res["success"] and res["stdout"]:
+        current_wt = {}
+        for line in res["stdout"].split("\n"):
+            line = line.strip()
+            if not line:
+                if current_wt.get("path"):
+                    worktrees.append(current_wt)
+                    current_wt = {}
+                continue
+            
+            if line.startswith("worktree "):
+                current_wt["path"] = line.replace("worktree ", "", 1).strip()
+            elif line.startswith("HEAD "):
+                current_wt["commit"] = line.replace("HEAD ", "", 1).strip()[:7]
+            elif line.startswith("branch "):
+                current_wt["branch"] = line.replace("branch refs/heads/", "", 1).strip()
+            elif line == "bare":
+                current_wt["bare"] = True
+            elif line == "detached":
+                current_wt["detached"] = True
+
+        if current_wt.get("path"):
+            worktrees.append(current_wt)
+
+    # If porcelain failed or returned simple list, fallback
+    if not worktrees:
+        simple_res = run_git(repo_path, ["worktree", "list"])
+        if simple_res["success"] and simple_res["stdout"]:
+            for line in simple_res["stdout"].split("\n"):
+                if line.strip():
+                    parts = line.split()
+                    worktrees.append({
+                        "path": parts[0] if len(parts) > 0 else "",
+                        "commit": parts[1] if len(parts) > 1 else "",
+                        "branch": parts[2].replace("[", "").replace("]", "") if len(parts) > 2 else ""
+                    })
+
+    # Flag main repo
+    rp_resolved = str(Path(repo_path).resolve())
+    for wt in worktrees:
+        wt_resolved = str(Path(wt.get("path", "")).resolve())
+        wt["is_main"] = (wt_resolved == rp_resolved)
+        wt["display_path"] = Path(wt.get("path", "")).name or wt.get("path", "")
+
+    return worktrees
+
+def add_worktree(repo_path: str, wt_path_str: str, branch_name: str = "", new_branch: bool = False) -> Dict[str, Any]:
+    """Adds a new isolated worktree."""
+    if not wt_path_str:
+        return {"success": False, "error": "Worktree path cannot be empty"}
+    
+    # Resolve target directory
+    target_p = Path(wt_path_str)
+    if not target_p.is_absolute():
+        target_p = (Path(repo_path).parent / wt_path_str).resolve()
+
+    args = ["worktree", "add"]
+    if new_branch and branch_name:
+        args.extend(["-b", branch_name, str(target_p)])
+    elif branch_name:
+        args.extend([str(target_p), branch_name])
+    else:
+        args.append(str(target_p))
+
+    res = run_git(repo_path, args)
+    log_event("info" if res["success"] else "warn", "worktree", f"Add worktree at '{target_p}' (branch: '{branch_name}')", {"path": str(target_p)}, error=res.get("error", ""))
+    return res
+
+def remove_worktree(repo_path: str, wt_path_str: str, force: bool = False) -> Dict[str, Any]:
+    """Removes an active worktree."""
+    if not wt_path_str:
+        return {"success": False, "error": "Worktree path cannot be empty"}
+    
+    args = ["worktree", "remove"]
+    if force:
+        args.append("--force")
+    args.append(wt_path_str)
+
+    res = run_git(repo_path, args)
+    log_event("info" if res["success"] else "warn", "worktree", f"Remove worktree '{wt_path_str}'", error=res.get("error", ""))
+    return res
 
 def get_file_diff(repo_path: str, file_path: str, staged: bool = False, commit_hash: str = "") -> str:
     if not repo_path or not (Path(repo_path) / ".git").exists():

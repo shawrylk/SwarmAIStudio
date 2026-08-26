@@ -1,11 +1,12 @@
 """
 Swarm AI Studio HTTP Server & API Dispatcher
-Serves frontend assets from web/ and dispatches JSON API routes.
+Serves frontend assets from web/ and dispatches JSON API routes with live debug logging.
 """
 
 import json
 import asyncio
 import subprocess
+import time
 from pathlib import Path
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs, unquote
@@ -13,12 +14,17 @@ from typing import List
 import httpx
 
 from swarm.config import PORT, HOST, WEB_DIR, LFM_HEALTH_URL
+from swarm.logger import log_event, get_live_logs
 from swarm.telemetry import get_hardware_metrics
 from swarm.git_engine import (
     find_git_repos,
     get_full_github_desktop_state,
     get_file_diff,
     get_commit_diff,
+    switch_or_create_branch,
+    list_worktrees,
+    add_worktree,
+    remove_worktree,
     run_git
 )
 from swarm.sessions import (
@@ -58,6 +64,7 @@ class SwarmHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(file_path.read_bytes())
         else:
+            log_event("warn", "server", f"404 File Not Found: {file_path.name}")
             self.send_error(404, f"File not found: {file_path.name}")
 
     def do_OPTIONS(self):
@@ -73,6 +80,7 @@ class SwarmHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self):
+        t0 = time.time()
         parsed = urlparse(self.path)
         qs = parse_qs(parsed.query)
 
@@ -84,7 +92,12 @@ class SwarmHandler(BaseHTTPRequestHandler):
         elif parsed.path == '/js/app.js':
             self._serve_file(WEB_DIR / "js" / "app.js", "application/javascript; charset=utf-8")
 
-        # 2. Telemetry & Swarm Metrics
+        # 2. Live Debug Logs Endpoint
+        elif parsed.path == '/api/debug/logs':
+            limit = int(qs.get("limit", [50])[0])
+            self._send_json({"logs": get_live_logs(limit)})
+
+        # 3. Telemetry & Swarm Metrics
         elif parsed.path in ('/api/metrics', '/api/status'):
             lfm_ok = False
             try:
@@ -100,34 +113,44 @@ class SwarmHandler(BaseHTTPRequestHandler):
                 "topology": SWARM_STATE
             })
 
-        # 3. Repositories & Git Desktop Engine
+        # 4. Repositories & Git Desktop Engine
         elif parsed.path == '/api/repos':
-            self._send_json(find_git_repos())
+            repos = find_git_repos()
+            self._send_json(repos)
+
         elif parsed.path == '/api/git/overview':
             repo_path = qs.get("repo_path", [""])[0]
             self._send_json(get_full_github_desktop_state(repo_path))
+
         elif parsed.path == '/api/git/diff':
             repo_path = qs.get("repo_path", [""])[0]
             file_path = qs.get("file", [""])[0]
             staged = qs.get("staged", ["false"])[0] == "true"
             diff_text = get_file_diff(repo_path, file_path, staged=staged)
             self._send_json({"file": file_path, "diff": diff_text})
+
         elif parsed.path == '/api/git/commit_detail':
             repo_path = qs.get("repo_path", [""])[0]
             commit_hash = qs.get("hash", [""])[0]
             self._send_json(get_commit_diff(repo_path, commit_hash))
 
-        # 4. Multi-Chat Sessions
+        elif parsed.path == '/api/git/worktrees':
+            repo_path = qs.get("repo_path", [""])[0]
+            self._send_json({"worktrees": list_worktrees(repo_path)})
+
+        # 5. Multi-Chat Sessions
         elif parsed.path == '/api/sessions':
             self._send_json(list_sessions())
+
         elif parsed.path == '/api/sessions/get':
             sess_id = qs.get("id", [""])[0]
             self._send_json(load_session(sess_id))
 
-        # 5. Artifact Vault
+        # 6. Artifact Vault (Grouped by Repo)
         elif parsed.path == '/api/artifacts':
             repo_path = qs.get("repo_path", [""])[0]
             self._send_json(scan_all_artifacts(repo_path))
+
         elif parsed.path == '/api/artifacts/read':
             target_path = qs.get("path", [""])[0]
             if not target_path:
@@ -143,10 +166,11 @@ class SwarmHandler(BaseHTTPRequestHandler):
             else:
                 self._send_json({"error": "File not found"}, status=404)
 
-        # 6. Models Catalog & Assignments
+        # 7. Models Catalog & Assignments
         elif parsed.path == '/api/models/catalog':
             catalog = scout_all_models(force_refresh=False)
             self._send_json(catalog)
+
         elif parsed.path == '/api/models/assignments':
             self._send_json(MODEL_ASSIGNMENTS)
 
@@ -154,6 +178,7 @@ class SwarmHandler(BaseHTTPRequestHandler):
             self.send_error(404, "Not Found")
 
     def do_POST(self):
+        t0 = time.time()
         parsed = urlparse(self.path)
         length = int(self.headers.get('Content-Length', 0))
         body = self.rfile.read(length).decode() if length > 0 else "{}"
@@ -167,7 +192,8 @@ class SwarmHandler(BaseHTTPRequestHandler):
             message = payload.get("message", "")
             repo_path = payload.get("repo_path", "")
             session_id = payload.get("session_id", "")
-            
+            log_event("info", "chat", f"Starting chat prompt: '{message[:50]}...'", {"repo": Path(repo_path).name if repo_path else "None"})
+
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             result = loop.run_until_complete(process_advisor_chat(message, repo_path, session_id))
@@ -180,11 +206,13 @@ class SwarmHandler(BaseHTTPRequestHandler):
             title = payload.get("title", "New Chat")
             repo_path = payload.get("repo_path", "")
             sess = create_new_session(title, repo_path)
+            log_event("info", "session", f"Created new session '{sess['id']}'", {"title": title})
             self._send_json(sess)
 
         elif parsed.path == '/api/sessions/delete':
             sess_id = payload.get("id", "")
             delete_session(sess_id)
+            log_event("info", "session", f"Deleted session '{sess_id}'")
             self._send_json({"status": "deleted"})
 
         elif parsed.path == '/api/sessions/rename':
@@ -193,11 +221,12 @@ class SwarmHandler(BaseHTTPRequestHandler):
             rename_session(sess_id, title)
             self._send_json({"status": "renamed"})
 
-        # 3. Git Operations
+        # 3. Git Operations with Comprehensive Debug Logging
         elif parsed.path == '/api/git/commit':
             repo_path = payload.get("repo_path", "")
             msg = payload.get("message", "Commit via Swarm Web")
             files = payload.get("files", [])
+            log_event("info", "git", f"Committing changes: '{msg[:40]}'", {"files_count": len(files)})
             if files:
                 run_git(repo_path, ["add", "--"] + files)
             else:
@@ -208,6 +237,7 @@ class SwarmHandler(BaseHTTPRequestHandler):
         elif parsed.path == '/api/git/discard':
             repo_path = payload.get("repo_path", "")
             file_path = payload.get("file", "")
+            log_event("info", "git", f"Discarding file '{file_path}'")
             stat = run_git(repo_path, ["status", "--porcelain", file_path])
             if "??" in stat.get("stdout", ""):
                 res = run_git(repo_path, ["clean", "-f", "--", file_path])
@@ -217,16 +247,19 @@ class SwarmHandler(BaseHTTPRequestHandler):
 
         elif parsed.path == '/api/git/push':
             repo_path = payload.get("repo_path", "")
+            log_event("info", "git", "Executing git push")
             res = run_git(repo_path, ["push"])
             self._send_json(res)
 
         elif parsed.path == '/api/git/pull':
             repo_path = payload.get("repo_path", "")
+            log_event("info", "git", "Executing git pull --rebase")
             res = run_git(repo_path, ["pull", "--rebase"])
             self._send_json(res)
 
         elif parsed.path == '/api/git/fetch':
             repo_path = payload.get("repo_path", "")
+            log_event("info", "git", "Executing git fetch --all")
             res = run_git(repo_path, ["fetch", "--all"])
             self._send_json(res)
 
@@ -234,16 +267,22 @@ class SwarmHandler(BaseHTTPRequestHandler):
             repo_path = payload.get("repo_path", "")
             branch = payload.get("branch", "")
             create = payload.get("create", False)
-            args = ["checkout", "-b", branch] if create else ["checkout", branch]
-            res = run_git(repo_path, args)
+            res = switch_or_create_branch(repo_path, branch, create=create)
             self._send_json(res)
 
         elif parsed.path == '/api/git/worktree/add':
             repo_path = payload.get("repo_path", "")
             wt_path = payload.get("path", "")
             branch = payload.get("branch", "")
-            args = ["worktree", "add", wt_path] + ([branch] if branch else [])
-            res = run_git(repo_path, args)
+            new_branch = payload.get("new_branch", False)
+            res = add_worktree(repo_path, wt_path, branch_name=branch, new_branch=new_branch)
+            self._send_json(res)
+
+        elif parsed.path == '/api/git/worktree/remove':
+            repo_path = payload.get("repo_path", "")
+            wt_path = payload.get("path", "")
+            force = payload.get("force", False)
+            res = remove_worktree(repo_path, wt_path, force=force)
             self._send_json(res)
 
         elif parsed.path == '/api/git/stash/save':
@@ -256,6 +295,7 @@ class SwarmHandler(BaseHTTPRequestHandler):
         # 4. Model Scouting & Assignment
         elif parsed.path == '/api/models/rescout':
             catalog = scout_all_models(force_refresh=True)
+            log_event("info", "model", "Rescouted models for Gemini & Qwen")
             self._send_json({
                 "status": "scouted",
                 "catalog": catalog,
@@ -268,6 +308,7 @@ class SwarmHandler(BaseHTTPRequestHandler):
             if target and model_id:
                 MODEL_ASSIGNMENTS[target] = model_id
                 save_model_assignments(MODEL_ASSIGNMENTS)
+                log_event("info", "model", f"Assigned {target} -> {model_id}")
                 self._send_json({"status": "updated", "assignments": MODEL_ASSIGNMENTS})
             else:
                 self._send_json({"status": "error", "message": "Missing target or model_id"}, status=400)
@@ -290,6 +331,7 @@ def run_server(host: str = HOST, port: int = PORT):
     ThreadingHTTPServer.allow_reuse_address = True
     server = ThreadingHTTPServer((host, port), SwarmHandler)
     lan_ips = get_lan_ips()
+    log_event("info", "server", f"Swarm AI Studio HTTP Server started on port {port}")
     print("=" * 65)
     print(f"🚀 Swarm AI Studio (Dynamic GPU Swarm & GitHub Desktop) is LIVE:")
     print(f"   • Local:      http://localhost:{port}")
