@@ -16,11 +16,14 @@ LFM_HEALTH_URL = os.environ.get("LFM_HEALTH_URL", "http://localhost:8034/health"
 SWARM_DIR = Path.home() / ".swarm"
 SESSIONS_DIR = SWARM_DIR / "sessions"
 ARTIFACTS_DIR = SWARM_DIR / "artifacts"
+RULES_DIR = SWARM_DIR / "rules"
+GLOBAL_RULES_FILE = SWARM_DIR / "global_rules.md"
 MODELS_CONFIG_FILE = SWARM_DIR / "model_assignments.json"
 
 SWARM_DIR.mkdir(parents=True, exist_ok=True)
 SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
 ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
+RULES_DIR.mkdir(parents=True, exist_ok=True)
 
 # Package paths
 PKG_DIR = Path(__file__).resolve().parent.parent

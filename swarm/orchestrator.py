@@ -18,6 +18,7 @@ from swarm.artifacts import save_artifact_to_disk
 from swarm.sessions import save_session_turn
 from swarm.context7_engine import fetch_latest_doc_context, query_context7_library
 from swarm.planner_cbo import optimize_and_select_best_plan
+from swarm.rules_engine import format_enforced_rules_prompt
 
 MODEL_ASSIGNMENTS = load_model_assignments()
 
@@ -419,8 +420,9 @@ def plan_dynamic_swarm_for_task(message: str, has_repo: bool) -> List[Dict[str, 
             }
         ]
 
-async def execute_task_aware_swarm(sub_agents: List[Dict[str, Any]], repo_block: str, user_req: str) -> Dict[str, str]:
+async def execute_task_aware_swarm(sub_agents: List[Dict[str, Any]], repo_block: str, user_req: str, repo_path: str = "") -> Dict[str, str]:
     tasks = {}
+    rules_block = format_enforced_rules_prompt(repo_path)
     
     c7_docs_context = ""
     for agent in sub_agents:
@@ -438,10 +440,10 @@ async def execute_task_aware_swarm(sub_agents: List[Dict[str, Any]], repo_block:
         if agent_id == "agent_c7_docs":
             prompt = f"{c7_docs_context}\n\nTask: Extract and summarize exact live signatures and usage for: '{user_req}'"
         else:
-            prompt = f"{repo_block}\n\n{c7_docs_context}\n\nUser Request: {user_req}\n\n{agent.get('prompt_template', '')}"
+            prompt = f"{rules_block}\n\n{repo_block}\n\n{c7_docs_context}\n\nUser Request: {user_req}\n\n{agent.get('prompt_template', '')}"
 
         update_agent_status("sub_agents", agent_id, "running", f"⚡ {agent['name']} ({agent['skill']}) thinking...")
-        tasks[agent_id] = query_local_slot(prompt, system=f"You are the {agent['name']} with specialized skill '{agent['skill']}'.")
+        tasks[agent_id] = query_local_slot(prompt, system=f"You are the {agent['name']} with specialized skill '{agent['skill']}'. Enforce Clean Architecture (small functions ≤30 lines, 1 domain class per file, Dependency Injection).")
 
     results = await asyncio.gather(*tasks.values(), return_exceptions=True)
     
@@ -480,9 +482,10 @@ async def process_advisor_chat(message: str, repo_path: str = "", session_id: st
     start_t = time.time()
     status_steps = []
     
-    # 1. Scout Repository Context
+    # 1. Scout Repository Context & Enforce Rules
     ctx = extract_deep_repo_context(repo_path)
     repo_block = format_repo_prompt_block(ctx)
+    rules_block = format_enforced_rules_prompt(repo_path)
     if ctx:
         status_steps.append(f"📁 Loaded context for '{ctx.get('name')}' (Branch: {ctx.get('branch')})")
 
@@ -503,7 +506,7 @@ async def process_advisor_chat(message: str, repo_path: str = "", session_id: st
     route = route_request(message, has_repo=bool(ctx))
     update_agent_status("consensus_nodes", "lfm", "running", f"⚡ Hosting {len(planned_subagents)} concurrent GPU swarm slots...")
     
-    local_swarm_task = execute_task_aware_swarm(planned_subagents, repo_block, message)
+    local_swarm_task = execute_task_aware_swarm(planned_subagents, repo_block, message, repo_path=repo_path)
     
     qwen_task = None
     if "qwen" in route["selected"]:
@@ -520,7 +523,7 @@ async def process_advisor_chat(message: str, repo_path: str = "", session_id: st
     update_agent_status("consensus_nodes", "lfm", "online", "Port 8034 (8 continuous slots)")
     status_steps.append(f"✓ {len(planned_subagents)} specialist sub-agents completed in parallel on GPU.")
 
-    # 5. Lead Advisor Synthesis
+    # 5. Lead Advisor Synthesis (with Mandatory Clean Architecture Rules)
     update_agent_status("orchestrator", "gemini", "running", "👑 Lead Advisor synthesizing specialist findings...")
     status_steps.append("🧠 Synthesizing dynamic specialist findings into authoritative verdict...")
 
@@ -536,6 +539,8 @@ A user asked:
 {message}
 </REQUEST>
 
+{rules_block}
+
 We deployed a task-aware dynamic swarm of {len(planned_subagents)} specialized sub-agents on our Liquid LFM 2.5 GPU engine alongside Qwen 3.8 Max Oracle:
 ---
 {findings_str}
@@ -546,12 +551,16 @@ We deployed a task-aware dynamic swarm of {len(planned_subagents)} specialized s
 
 Your Task:
 1. Synthesize these specialist findings into a cohesive, direct, and authoritative Lead Advisor response.
-2. If this is a CODE REVIEW or AUDIT:
+2. ENFORCE CLEAN ARCHITECTURE:
+   - Every function MUST be small (≤ 30-35 lines) and single-responsibility.
+   - Classes MUST be small, cohesive, and 1 domain class per file.
+   - Use Dependency Injection (DI) to wire dependencies (inversion of control).
+   - Ensure high refactorability, testability, and clean layer separation.
+3. If this is a CODE REVIEW or AUDIT:
    - Provide Executive Summary, Critical Security/Regression Risks, Performance/Memory Optimizations, and Concrete Next Steps.
    - Format the entire review as an authoritative Markdown Artifact document.
-3. If this is an IMPLEMENTATION / DESIGN request:
+4. If this is an IMPLEMENTATION / DESIGN request:
    - Provide exact file paths, schemas, and production code grounded in the latest 2026 library versions.
-4. Highlight subtle issues caught across the dynamic sub-agent streams.
 """
 
     final_advisor_answer = await query_gemini(synthesis_prompt, MODEL_ASSIGNMENTS.get("gemini"))

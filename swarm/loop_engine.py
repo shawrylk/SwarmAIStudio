@@ -15,6 +15,7 @@ from swarm.logger import log_event
 from swarm.git_engine import extract_deep_repo_context, format_repo_prompt_block, run_git
 from swarm.model_scout import load_model_assignments
 from swarm.artifacts import save_artifact_to_disk
+from swarm.rules_engine import format_enforced_rules_prompt
 
 # Global Autonomous Loop State
 LOOP_STATE: Dict[str, Any] = {
@@ -207,10 +208,11 @@ async def execute_task_step(task: Dict[str, Any], repo_block: str) -> Dict[str, 
             "question": consult_question,
             "guidance": advisor_guidance
         })
-    else:
-        advisor_guidance = ""
+    rules_block = format_enforced_rules_prompt(LOOP_STATE.get("repo_path", ""))
 
-    prompt = f"""{repo_block}
+    prompt = f"""{rules_block}
+
+{repo_block}
 
 Task: {task['title']}
 Role: {role.upper()}
@@ -220,9 +222,9 @@ Acceptance Criteria: {task['acceptance_criteria']}
 Lead Advisor Guidance:
 {advisor_guidance}
 
-Execute this step rigorously. Provide concrete code, validation results, and complete implementation details.
+Execute this step rigorously enforcing Clean Architecture (small functions ≤30 lines, 1 domain model per file, Dependency Injection). Provide concrete code, validation results, and complete implementation details.
 """
-    system_prompt = f"You are {agent_name} specialized in {role.upper()}. Follow the Lead Advisor guidance precisely."
+    system_prompt = f"You are {agent_name} specialized in {role.upper()}. Follow Clean Architecture and Lead Advisor guidance precisely."
     output = await query_local_slot(prompt, system=system_prompt)
     
     task["output"] = output

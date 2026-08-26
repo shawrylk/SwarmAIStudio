@@ -59,6 +59,7 @@ from swarm.loop_engine import (
 from swarm.context7_engine import query_context7_library, query_context7_docs, fetch_latest_doc_context
 from swarm.planner_cbo import optimize_and_select_best_plan, execute_plan_dag
 from swarm.skills_scanner import scan_all_installed_skills
+from swarm.rules_engine import get_global_rules, save_global_rules, discover_project_rules
 
 MODEL_ASSIGNMENTS = load_model_assignments()
 
@@ -204,6 +205,14 @@ class SwarmHandler(BaseHTTPRequestHandler):
             self._send_json({
                 "skills": scan_all_installed_skills(),
                 "total_count": len(scan_all_installed_skills())
+            })
+
+        # 10. Clean Architecture Rules (Global & Project-Specific)
+        elif parsed.path == '/api/rules':
+            repo_path = qs.get("repo_path", [""])[0]
+            self._send_json({
+                "global_rules": get_global_rules(),
+                "project_rules": discover_project_rules(repo_path)
             })
 
         else:
@@ -425,6 +434,15 @@ class SwarmHandler(BaseHTTPRequestHandler):
                 self._send_json({"status": "updated", "assignments": MODEL_ASSIGNMENTS})
             else:
                 self._send_json({"status": "error", "message": "Missing target or model_id"}, status=400)
+
+        elif parsed.path == '/api/rules/global':
+            payload = json.loads(body)
+            new_content = payload.get("content", "")
+            if new_content:
+                ok = save_global_rules(new_content)
+                self._send_json({"success": ok, "global_rules": get_global_rules()})
+            else:
+                self._send_json({"success": False, "error": "Missing content"}, status=400)
 
         else:
             self.send_error(404, "Not Found")

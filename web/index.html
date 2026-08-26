@@ -37,6 +37,9 @@
       <select id="repoSelect" class="repo-select" onchange="onRepoChanged()">
         <option value="">Discovering projects...</option>
       </select>
+      <button class="action-btn" onclick="openRulesModal()" style="border-color:#a855f7; color:#c084fc; font-weight:700; font-size:11.5px; padding:4px 10px;">
+        📜 Architecture Rules
+      </button>
     </div>
 
     <div class="telemetry-pills">
@@ -583,6 +586,49 @@
       </div>
       <div class="modal-body markdown-body" id="modalDocContent">
         Loading document content...
+      </div>
+    </div>
+  </div>
+
+  <!-- CLEAN ARCHITECTURE RULES MODAL (GLOBAL & PROJECT SPECIFIC) -->
+  <div class="modal-overlay" id="rulesModal" onclick="closeRulesModal()">
+    <div class="modal-box" onclick="event.stopPropagation()" style="width:780px; max-width:92vw;">
+      <div class="modal-header">
+        <span style="font-weight:800; color:#ffffff; font-size:16px;">📜 Clean Architecture & Swarm Quality Rules</span>
+        <button class="action-btn" onclick="closeRulesModal()">✕ Close</button>
+      </div>
+      <div class="modal-body" style="display:flex; flex-direction:column; gap:16px; padding:20px;">
+        
+        <!-- Tab Switcher for Global vs Project Rules -->
+        <div class="quick-actions" style="border-bottom:1px solid #1e293b; padding-bottom:10px;">
+          <button class="action-btn active" id="rulesTabGlobalBtn" onclick="switchRulesTab('global')">🌐 Global Architecture Rules (Mandatory)</button>
+          <button class="action-btn" id="rulesTabProjectBtn" onclick="switchRulesTab('project')">📁 Project-Specific Rules (<span id="rulesProjectRepoName">Active Repo</span>)</button>
+        </div>
+
+        <!-- Global Rules Pane -->
+        <div id="rulesGlobalPane" style="display:flex; flex-direction:column; gap:10px;">
+          <div style="font-size:12.5px; color:#cbd5e1;">
+            These standards are automatically injected into all sub-agent prompts, autonomous loops, and Lead Advisor code synthesis:
+          </div>
+          <textarea id="globalRulesEditor" style="width:100%; height:260px; background:#070a12; border:1px solid #334155; border-radius:8px; color:#ffffff; font-family:monospace; font-size:12.5px; padding:12px; resize:vertical; line-height:1.5;"></textarea>
+          <div style="display:flex; justify-content:space-between; align-items:center;">
+            <span style="font-size:11.5px; color:var(--text-muted);">Enforces small functions (≤30 lines), 1 domain model/file, Dependency Injection, and high refactorability.</span>
+            <button class="action-btn" onclick="saveGlobalRulesAction()" style="background:#16a34a; color:#ffffff; font-weight:800; border:none; padding:6px 14px;">
+              💾 Save Global Rules
+            </button>
+          </div>
+        </div>
+
+        <!-- Project Rules Pane -->
+        <div id="rulesProjectPane" style="display:none; flex-direction:column; gap:10px;">
+          <div style="font-size:12.5px; color:#cbd5e1;">
+            Project-specific conventions automatically discovered from <code>RULE.md</code>, <code>GEMINI.md</code>, <code>CLAUDE.md</code>, or <code>.cursorrules</code> in the selected repository:
+          </div>
+          <div id="projectRulesContent" class="markdown-body" style="background:#070a12; border:1px solid #1e293b; border-radius:8px; padding:14px; max-height:300px; overflow-y:auto; font-size:12.5px;">
+            Scanning repository for rules...
+          </div>
+        </div>
+
       </div>
     </div>
   </div>

@@ -2001,3 +2001,98 @@ function escapeJs(str) {
   if (!str) return '';
   return String(str).replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '\\"').replace(/\n/g, '\\n');
 }
+
+// ─────────────────────────────────────────────────────────────
+// CLEAN ARCHITECTURE RULES MANAGER
+// ─────────────────────────────────────────────────────────────
+async function openRulesModal() {
+  const modal = document.getElementById('rulesModal');
+  if (modal) modal.className = 'modal-overlay active';
+  await loadRulesData();
+}
+
+function closeRulesModal() {
+  const modal = document.getElementById('rulesModal');
+  if (modal) modal.className = 'modal-overlay';
+}
+
+function switchRulesTab(tab) {
+  const globalBtn = document.getElementById('rulesTabGlobalBtn');
+  const projectBtn = document.getElementById('rulesTabProjectBtn');
+  const globalPane = document.getElementById('rulesGlobalPane');
+  const projectPane = document.getElementById('rulesProjectPane');
+
+  if (tab === 'global') {
+    globalBtn.className = 'action-btn active';
+    projectBtn.className = 'action-btn';
+    globalPane.style.display = 'flex';
+    projectPane.style.display = 'none';
+  } else {
+    globalBtn.className = 'action-btn';
+    projectBtn.className = 'action-btn active';
+    globalPane.style.display = 'none';
+    projectPane.style.display = 'flex';
+  }
+}
+
+async function loadRulesData() {
+  try {
+    const res = await fetch(`/api/rules?repo_path=${encodeURIComponent(currentRepoPath)}`, { cache: 'no-store' });
+    const data = await res.json();
+    
+    const editor = document.getElementById('globalRulesEditor');
+    if (editor) editor.value = data.global_rules || '';
+
+    const repoNameSpan = document.getElementById('rulesProjectRepoName');
+    const repoTitle = currentRepoPath ? currentRepoPath.split('/').pop() : 'Project';
+    if (repoNameSpan) repoNameSpan.innerText = repoTitle;
+
+    const projContainer = document.getElementById('projectRulesContent');
+    if (projContainer) {
+      if (data.project_rules && data.project_rules.has_rules) {
+        projContainer.innerHTML = `
+          <div style="font-weight:800; color:var(--accent); margin-bottom:8px;">
+            ✓ Active Rules File: <code>${escapeHtml(data.project_rules.source)}</code>
+          </div>
+          ${parseMarkdown(data.project_rules.content)}
+        `;
+      } else {
+        projContainer.innerHTML = `
+          <div style="color:var(--text-muted); padding:16px; text-align:center;">
+            No project-specific rule file (<code>RULE.md</code>, <code>GEMINI.md</code>, <code>CLAUDE.md</code>, or <code>.cursorrules</code>) detected in <b>${escapeHtml(repoTitle)}</b>.
+            <br><span style="font-size:11.5px;">Global Clean Architecture rules are actively enforced.</span>
+          </div>
+        `;
+      }
+    }
+  } catch(e) {
+    showToast("Error loading rules: " + e.message, "error");
+  }
+}
+
+async function saveGlobalRulesAction() {
+  const editor = document.getElementById('globalRulesEditor');
+  if (!editor) return;
+  const content = editor.value.trim();
+  if (!content) {
+    showToast("Global rules content cannot be empty", "warn");
+    return;
+  }
+
+  try {
+    const res = await fetch('/api/rules/global', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content: content })
+    });
+    const data = await res.json();
+    if (data.success) {
+      showToast("✓ Global Clean Architecture rules saved!", "success");
+    } else {
+      showToast("Error saving rules: " + (data.error || "Failed"), "error");
+    }
+  } catch(e) {
+    showToast("Error saving rules: " + e.message, "error");
+  }
+}
+
