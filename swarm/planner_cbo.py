@@ -216,6 +216,19 @@ def enumerate_candidate_plans(stats: Dict[str, Any], user_msg: str) -> List[Swar
     p3 = SwarmExecutionPlan("plan_c7_consensus", "Context7-Grounded Adversarial Consensus DAG", p3_nodes, confidence_score=0.98, strategy_rationale="Grounds implementation with live 2026 Context7 docs and cross-checks with Qwen Oracle.")
     candidates.append(p3)
 
+    # ─────────────────────────────────────────────────────────────
+    # Candidate Plan 4: Claude Code CLI Escalation & Deep Reasoning DAG
+    # ─────────────────────────────────────────────────────────────
+    p4_nodes = [
+        SwarmPlanNode("n1", "AST Symbol & Dependency Scan", "INDEX_SCAN", "scout", "🔍 Symbol & AST Scout", "GPU Slot 1", estimated_cost_ms=350, estimated_tokens=700),
+        SwarmPlanNode("n2", "Claude Code Deep Reasoning Synthesis", "CODE_DRAFT", "claude", "🧠 Claude Code CLI (v2.1)", "Claude 3.7", dependencies=["n1"], estimated_cost_ms=1800, estimated_tokens=2500),
+        SwarmPlanNode("n3", "LSP & Syntax Contract Verification", "SYNTAX_VERIFY", "qa", "🧪 LSP & Syntax Verifier", "GPU Slot 2", dependencies=["n2"], estimated_cost_ms=600, estimated_tokens=900),
+        SwarmPlanNode("n4", "Qwen 3.8 Invariant Consensus Gate", "CONSENSUS_MERGE", "oracle", "🔮 Qwen Web Oracle", "Qwen Web", dependencies=["n2"], estimated_cost_ms=1100, estimated_tokens=1200),
+        SwarmPlanNode("n5", "Lead Advisor Sign-off & Architecture Lock", "SYNTHESIZE", "architect", "👑 Gemini Lead Advisor", "Gemini Pro", dependencies=["n3", "n4"], estimated_cost_ms=1400, estimated_tokens=2000)
+    ]
+    p4 = SwarmExecutionPlan("plan_claude_escalation", "Claude Code CLI Escalation & Deep Reasoning DAG", p4_nodes, confidence_score=0.99, strategy_rationale="Dispatches high-complexity reasoning directly through Claude Code CLI (v2.1).")
+    candidates.append(p4)
+
     return candidates
 
 def optimize_and_select_best_plan(message: str, repo_ctx: Dict[str, Any]) -> Tuple[SwarmExecutionPlan, List[SwarmExecutionPlan], Dict[str, Any]]:

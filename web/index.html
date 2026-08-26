@@ -322,6 +322,21 @@
           </div>
         </div>
 
+        <!-- Super-Orchestrator Multi-Engine Matrix -->
+        <div style="width:100%; display:flex; flex-direction:column; gap:10px; margin-bottom:18px;">
+          <div style="display:flex; justify-content:space-between; align-items:center;">
+            <span style="font-size:12px; text-transform:uppercase; color:#c084fc; font-weight:800; letter-spacing:1.2px;">
+              ⚡ PLUGGABLE EXECUTION ENGINES & BRIDGES (SUPER-ORCHESTRATOR CONTROL PLANE)
+            </span>
+            <button class="action-btn" onclick="testAllEnginesDiagnostic()" style="font-size:11px; padding:3px 8px; border-color:#a855f7; color:#c084fc;">
+              🧪 Run All Engines Diagnostic
+            </button>
+          </div>
+          <div id="superOrchestratorEnginesGrid" style="display:grid; grid-template-columns:repeat(auto-fit, minmax(210px, 1fr)); gap:12px; width:100%;">
+            <!-- Dynamically populated via GET /api/backends/status -->
+          </div>
+        </div>
+
         <!-- Level 1: Master Orchestrator -->
         <div style="display:flex; justify-content:center; width:100%;">
           <div class="agent-card" id="node-gemini" style="width:480px; border:2px solid var(--purple); background:#17132b; box-shadow:0 0 28px var(--purple-glow); border-radius:12px; padding:14px; display:flex; flex-direction:column; gap:6px;">

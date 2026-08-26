@@ -1763,6 +1763,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   await loadSessionsList();
   await loadModelCatalogAndAssignments();
   await loadSkillsCatalog();
+  await loadBackendsStatus();
   updateTelemetryAndTopology();
   setPollingSpeed(false);
 });
@@ -2095,4 +2096,69 @@ async function saveGlobalRulesAction() {
     showToast("Error saving rules: " + e.message, "error");
   }
 }
+
+// ─────────────────────────────────────────────────────────────
+// SUPER-ORCHESTRATOR MULTI-ENGINE EXECUTION MATRIX
+// ─────────────────────────────────────────────────────────────
+async function loadBackendsStatus() {
+  try {
+    const res = await fetch('/api/backends/status', { cache: 'no-store' });
+    const data = await res.json();
+    const container = document.getElementById('superOrchestratorEnginesGrid');
+    if (!container) return;
+    container.innerHTML = '';
+
+    const backends = data.backends || {};
+    Object.values(backends).forEach(b => {
+      const card = document.createElement('div');
+      const isOnline = (b.status === 'ready' || b.status === 'online');
+      card.style.cssText = `background:#0b1120; border:1.5px solid ${isOnline ? '#22c55e' : '#334155'}; border-radius:10px; padding:10px 12px; display:flex; flex-direction:column; gap:4px;`;
+      
+      card.innerHTML = `
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+          <span style="font-weight:800; color:#ffffff; font-size:12.5px;">${escapeHtml(b.name)}</span>
+          <span class="status-badge ${isOnline ? 'badge-online' : 'badge-idle'}" id="status-badge-${b.id}" style="font-size:9.5px; padding:2px 6px;">${escapeHtml(b.status.toUpperCase())}</span>
+        </div>
+        <div style="font-size:10.5px; color:#94a3b8; font-weight:700;">${escapeHtml(b.role)}</div>
+        <div style="font-family:monospace; font-size:11px; color:var(--accent); background:#070a12; padding:3px 6px; border-radius:4px; border:1px solid #1e293b; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">
+          🏷️ ${escapeHtml(b.version)}
+        </div>
+        <div style="display:flex; justify-content:flex-end; margin-top:4px;">
+          <button class="action-btn" onclick="testSingleBackend('${escapeJs(b.id)}')" style="font-size:10px; padding:2px 6px;">
+            ⚡ Test Ping
+          </button>
+        </div>
+      `;
+      container.appendChild(card);
+    });
+  } catch(e) {}
+}
+
+async function testSingleBackend(backendId) {
+  showToast(`Pinging ${backendId}...`, "info", 1500);
+  try {
+    const res = await fetch('/api/backends/test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ backend_id: backendId })
+    });
+    const data = await res.json();
+    if (data.success) {
+      showToast(`✓ ${backendId} responded in ${data.duration_s}s!`, "success", 3000);
+    } else {
+      showToast(`⚠️ ${backendId} ping failed: ${data.error || 'No output'}`, "warn", 3500);
+    }
+  } catch(e) {
+    showToast(`Error pinging ${backendId}: ${e.message}`, "error");
+  }
+}
+
+async function testAllEnginesDiagnostic() {
+  showToast("Running diagnostic on all 5 Super-Orchestrator engines...", "info", 2500);
+  const ids = ["claude_code", "agy_gemini", "context7_mcp", "liquid_lfm", "qwen_oracle"];
+  for (const id of ids) {
+    await testSingleBackend(id);
+  }
+}
+
 

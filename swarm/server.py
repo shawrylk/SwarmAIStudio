@@ -60,6 +60,7 @@ from swarm.context7_engine import query_context7_library, query_context7_docs, f
 from swarm.planner_cbo import optimize_and_select_best_plan, execute_plan_dag
 from swarm.skills_scanner import scan_all_installed_skills
 from swarm.rules_engine import get_global_rules, save_global_rules, discover_project_rules
+from swarm.engine_bridge import probe_all_backends, test_backend_connection
 
 MODEL_ASSIGNMENTS = load_model_assignments()
 
@@ -214,6 +215,11 @@ class SwarmHandler(BaseHTTPRequestHandler):
                 "global_rules": get_global_rules(),
                 "project_rules": discover_project_rules(repo_path)
             })
+
+        # 11. Multi-Engine Execution Backends Status (Claude Code, AGY, Gemini, Context7, LFM)
+        elif parsed.path == '/api/backends/status':
+            backends_info = asyncio.run(probe_all_backends())
+            self._send_json(backends_info)
 
         else:
             self.send_error(404, "Not Found")
@@ -443,6 +449,12 @@ class SwarmHandler(BaseHTTPRequestHandler):
                 self._send_json({"success": ok, "global_rules": get_global_rules()})
             else:
                 self._send_json({"success": False, "error": "Missing content"}, status=400)
+
+        elif parsed.path == '/api/backends/test':
+            payload = json.loads(body)
+            backend_id = payload.get("backend_id", "claude_code")
+            test_res = asyncio.run(test_backend_connection(backend_id))
+            self._send_json(test_res)
 
         else:
             self.send_error(404, "Not Found")
