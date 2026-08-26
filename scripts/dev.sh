@@ -10,4 +10,4 @@ PORT="${SWARM_PORT:-8080}"
 fuser -k "${PORT}/tcp" >/dev/null 2>&1 || true
 
 echo "Launching Swarm AI Studio in foreground (interactive dev mode)..."
-exec "${ROOT_DIR}/bin/swarm-studio" --port "$PORT"
+exec "${ROOT_DIR}/bin/swarm" web --port "$PORT"

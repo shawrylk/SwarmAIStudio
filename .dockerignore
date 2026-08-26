@@ -1,0 +1,34 @@
+# VCS & CI
+.git
+.gitignore
+.github
+
+# Python caches / build
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+
+# Virtualenvs
+.venv/
+venv/
+env/
+
+# Local runtime state (belongs in the swarm-data volume, not the image)
+.swarm/
+*.log
+swarm_studio.log
+
+# Editor / OS cruft
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+Thumbs.db
+
+# Scratch
+scratchpad/

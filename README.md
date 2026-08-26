@@ -63,16 +63,32 @@ graph TD
 * **Worktrees & Stashes:** Create isolated worktrees and save/pop stashes from interactive dialogs.
 * **History Inspector:** Chronological commit cards with author, date, and full commit diff viewer.
 
+### 2b. 🔁 Autonomous Loop Lifecycle (Real Git + GitHub)
+The Auto-Loop runs a full, honest lifecycle per goal:
+1. Opens an isolated branch `swarm/loop-<id>` and a GitHub tracking issue.
+2. Decomposes the goal into PM/Dev/QA/Review tasks and — when the `project` token
+   scope is present — **breaks them onto a GitHub Projects board** (one card per task,
+   moved to *Done* as each is verified).
+3. Writes real files, runs the real test suite, and commits per task.
+4. On success: merges the branch into the default branch, **deletes the merged branch**,
+   and closes the issue with evidence.
+5. **If no code was produced**, it says so plainly — no bogus merge, and the issue is left
+   **open** with an explanation (small local models sometimes emit no applicable code).
+
+> The Projects board needs the `project` gh scope once:
+> `gh auth refresh -s project`. Without it the loop logs a one-line notice and continues.
+
 ### 3. 💬 Multi-Chat Persistence (`~/.swarm/sessions/`)
 * Create, rename, delete, and switch between multiple chat sessions on the collapsible left sidebar.
 * All conversation history, prompts, status timelines, and generated Markdown Artifacts are persisted across page refreshes and LAN devices.
 
 ### 4. 📁 Remote Artifact Vault & LAN Multi-PC Reader
 * Centralized artifact storage at `~/.swarm/artifacts/`.
-* Read, copy, or download generated reports over LAN via `/api/artifacts/read?path=...`.
+* Read, copy, or download generated reports over LAN via `/api/artifacts/read?path=...`. Reads are confined to the artifact vault (`~/.swarm/artifacts/`); paths outside it are rejected.
 
-### 5. 📚 Capacity Matrix Legend (12 Specialized Roles)
-* Live keyword filterable catalog in the **Swarm Topology** tab showing trigger conditions, toolgroups, and capabilities for all 12 specialized sub-agent roles.
+### 5. 📚 Capacity Matrix Legend
+* Live keyword-filterable catalog in the **Swarm Topology** tab, auto-scanned from every installed agent skill on the host (typically 50+), showing trigger conditions, toolgroups, and capabilities.
+* Sub-agents scale dynamically from **1 to 8** GPU continuous-batching slots per task, drawn from the specialist roster (Security, Performance, Architecture, QA, Scout, Database, Draftsman, and more).
 
 ---
 
@@ -93,12 +109,24 @@ make install
 ```
 
 ### 2. Launch Swarm AI Studio
-```bash
-# Launch interactive foreground server
-make run
 
-# Or launch background production daemon
-make start
+Everything runs through a single command, **`swarm`**:
+
+```bash
+swarm web                 # launch the web console + API (default command)
+swarm web --port 9000     # custom port
+swarm version             # print version
+swarm --help              # see all commands
+
+# From a source checkout without installing:
+./bin/swarm web
+```
+
+Or use the Makefile shortcuts:
+
+```bash
+make run       # foreground server (swarm web)
+make start     # background production daemon
 ```
 
 Open **`http://localhost:8080`** (or access from any LAN PC at **`http://<YOUR_IP>:8080`**).
@@ -115,17 +143,44 @@ Open **`http://localhost:8080`** (or access from any LAN PC at **`http://<YOUR_I
 | `make stop` | Gracefully terminate running background instance |
 | `make test` | Run automated unit test suite (`tests/`) |
 | `make clean` | Remove `__pycache__`, build artifacts, and caches |
-| `bin/swarm-studio --port 9000` | Start server on custom port |
+| `make docker-up` | Build & run the full stack via Docker Compose (detached) |
+| `make docker-down` | Stop and remove the Docker Compose stack |
+| `make docker-logs` | Tail container logs |
+| `swarm web --port 9000` | Start server on a custom port |
+| `swarm version` | Print the installed version |
 
 ---
 
 ## 🐳 Docker Deployment
 
-You can run Swarm AI Studio in Docker:
+One command builds and launches the studio in the background:
 
 ```bash
-docker compose up -d
+make docker-up          # build + run detached (or: docker compose up -d --build)
+make docker-logs        # tail logs
+make docker-down        # stop & remove
 ```
+
+Then open **`http://localhost:8080`**.
+
+**Configuration** (env vars, all optional):
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `SWARM_PORT` | `8080` | Host port to publish |
+| `REPOS_DIR` | `~/Documents/GitHub` | Folder of git repos to mount **read-write** so the GitHub Desktop suite and autonomous loop can stage, commit, stash, and create worktrees |
+| `LFM_URL` | `host.docker.internal:8034` | Local GPU LFM host — runs on the **host machine**, reached from the container via `host.docker.internal` |
+
+```bash
+# Example: publish on 9000 and mount a different projects folder
+SWARM_PORT=9000 REPOS_DIR=~/code docker compose up -d --build
+```
+
+Notes:
+* Vault, sessions, and rules persist in the named `swarm-data` volume across restarts.
+* Repos are mounted **read-write** (earlier revisions mounted them `:ro`, which silently broke commit/stage/stash). The image ships a default git identity and marks mounts as safe directories so loop commits succeed.
+* The Claude/Gemini/Context7 CLIs are host tools and are not bundled in the image; when absent the orchestrator honestly reports `fallback_local` and routes through the local GPU model.
+* A `HEALTHCHECK` polls `/api/repos`; `docker ps` shows `healthy` once ready.
 
 ---
 
@@ -138,12 +193,13 @@ make test
 test_file_search_scales_to_1_scout (tests.test_dynamic_planner.TestDynamicSwarmPlanner) ... ok
 test_bug_fix_scales_to_4_surgical_agents (tests.test_dynamic_planner.TestDynamicSwarmPlanner) ... ok
 test_deep_audit_scales_to_6_specialists (tests.test_dynamic_planner.TestDynamicSwarmPlanner) ... ok
-test_find_git_repos_discovers_repositories (tests.test_git_engine.TestGitEngine) ... ok
-test_get_full_github_desktop_state (tests.test_git_engine.TestGitEngine) ... ok
-test_session_lifecycle (tests.test_sessions.TestSessions) ... ok
+test_artifact_read_rejects_path_traversal (tests.test_security.TestServerSecurity) ... ok
+test_openapi_scanner_ignores_tsconfig (tests.test_contracts_engine.TestContractsEngine) ... ok
+test_qwen_oracle_reports_unavailable_honestly (tests.test_orchestrator_safety.TestOracleSafety) ... ok
+... (full suite)
 
 ----------------------------------------------------------------------
-Ran 6 tests in 0.042s
+Ran 107 tests
 
 OK
 ```

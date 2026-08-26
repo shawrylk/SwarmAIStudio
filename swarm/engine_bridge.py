@@ -73,9 +73,12 @@ async def probe_all_backends() -> Dict[str, Any]:
             "role": "Lead Architect & Codebase Orchestrator",
             "type": "cli_and_cloud",
             "bin": AGY_BIN if Path(AGY_BIN).exists() else GEMINI_BIN,
-            "version": agy_v or gemini_v or "Gemini 3.1 Pro High",
-            "available": True,
-            "status": "ready",
+            # Honest availability: a CLI must actually be detected. When neither
+            # agy nor gemini is present the orchestrator falls back to the local
+            # GPU model, so we report that degraded state instead of a fake "ready".
+            "version": agy_v or gemini_v or "Local GPU fallback (LFM 2.5)",
+            "available": bool(agy_v or gemini_v),
+            "status": "ready" if (agy_v or gemini_v) else "fallback_local",
             "capabilities": ["full_repo_orchestration", "multi_stage_synthesis", "cbo_optimization"]
         },
         "context7_mcp": {

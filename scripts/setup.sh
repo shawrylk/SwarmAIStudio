@@ -21,10 +21,10 @@ echo "Installing Python dependencies..."
 "$PYTHON_BIN" -m pip install --quiet -r "${ROOT_DIR}/requirements.txt" || "$PYTHON_BIN" -m pip install -r "${ROOT_DIR}/requirements.txt"
 
 # 3. Ensure executables are executable
-chmod +x "${ROOT_DIR}/bin/swarm-studio"
+chmod +x "${ROOT_DIR}/bin/swarm"
 chmod +x "${ROOT_DIR}/bin/qwen_oracle.sh"
 chmod +x "${ROOT_DIR}/scripts/"*.sh
 
 echo "✓ Permissions configured."
 echo "=== Swarm AI Studio setup complete! ==="
-echo "Run 'make run' or './bin/swarm-studio' to launch."
+echo "Run 'make run' or './bin/swarm web' to launch."

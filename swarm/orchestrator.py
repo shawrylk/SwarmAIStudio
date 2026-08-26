@@ -9,9 +9,16 @@ Synthesizes findings via Gemini Lead Advisor and persists Artifacts.
 import asyncio
 import subprocess
 import time
+import shutil
+import threading
 from typing import List, Dict, Any
 import httpx
-from swarm.config import LFM_URL, QWEN_ORACLE_SCRIPT
+from pathlib import Path
+from swarm.config import LFM_URL, QWEN_ORACLE_SCRIPT, MAX_CONCURRENT_AGENTS, script_is_runnable
+
+# Sentinel prefix marking a consensus/oracle response that did NOT actually run,
+# so downstream code and the UI never mistake a fallback notice for a real verdict.
+QWEN_UNAVAILABLE_PREFIX = "⚠️ [ORACLE UNAVAILABLE]"
 from swarm.model_scout import load_model_assignments
 from swarm.git_engine import extract_deep_repo_context, format_repo_prompt_block
 from swarm.artifacts import save_artifact_to_disk
@@ -20,14 +27,24 @@ from swarm.context7_engine import fetch_latest_doc_context, query_context7_libra
 from swarm.planner_cbo import optimize_and_select_best_plan
 from swarm.rules_engine import format_enforced_rules_prompt
 
+_orchestrator_lock = threading.RLock()
 MODEL_ASSIGNMENTS = load_model_assignments()
+
+SWARM_LOOP_ROSTER = [
+    {"id": "dev", "name": "Surgical Draftsman", "role": "dev"},
+    {"id": "qa", "name": "Zero-Trust QA Subagent", "role": "qa"},
+    {"id": "sec", "name": "Threat & Security Auditor", "role": "security"},
+    {"id": "oracle", "name": "Adversarial Consensus Oracle", "role": "oracle"},
+    {"id": "judge", "name": "Consensus Auto-Judge", "role": "judge"}
+]
 
 SWARM_STATE = {
     "summary": {
-        "total_nodes": 8,
+        "total_nodes": 1 + 2 + 5,
         "orchestrators": 1,
         "consensus_oracles": 2,
         "subagent_slots": 5,
+        "max_concurrent_agents": MAX_CONCURRENT_AGENTS,
         "running_now": 0
     },
     "orchestrator": {
@@ -62,41 +79,61 @@ SWARM_STATE = {
 }
 
 def set_dynamic_subagents_roster(agents: List[Dict[str, Any]]):
-    SWARM_STATE["sub_agents"] = agents
-    SWARM_STATE["summary"]["subagent_slots"] = len(agents)
-    SWARM_STATE["summary"]["total_nodes"] = 1 + len(SWARM_STATE["consensus_nodes"]) + len(agents)
-    recalculate_swarm_summary()
+    with _orchestrator_lock:
+        SWARM_STATE["sub_agents"] = agents
+        SWARM_STATE["summary"]["subagent_slots"] = len(agents)
+        SWARM_STATE["summary"]["total_nodes"] = 1 + len(SWARM_STATE["consensus_nodes"]) + len(agents)
+        SWARM_STATE["summary"]["max_concurrent_agents"] = MAX_CONCURRENT_AGENTS
+        recalculate_swarm_summary()
 
 def recalculate_swarm_summary():
-    running = 0
-    if SWARM_STATE["orchestrator"]["status"] == "running":
-        running += 1
-    for node in SWARM_STATE["consensus_nodes"]:
-        if node["status"] == "running":
+    with _orchestrator_lock:
+        running = 0
+        if SWARM_STATE["orchestrator"]["status"] == "running":
             running += 1
-    for sub in SWARM_STATE["sub_agents"]:
-        if sub["status"] == "running":
-            running += 1
-    SWARM_STATE["summary"]["running_now"] = running
+        for node in SWARM_STATE["consensus_nodes"]:
+            if node["status"] == "running":
+                running += 1
+        for sub in SWARM_STATE["sub_agents"]:
+            if sub["status"] == "running":
+                running += 1
+        SWARM_STATE["summary"]["running_now"] = running
 
 def update_agent_status(category: str, agent_id: str, status: str, task: str):
-    if category == "orchestrator":
-        SWARM_STATE["orchestrator"]["status"] = status
-        SWARM_STATE["orchestrator"]["task"] = task
-        SWARM_STATE["orchestrator"]["active_model"] = MODEL_ASSIGNMENTS.get("gemini", "gemini-3.1-pro-high")
-    elif category == "consensus_nodes":
-        for node in SWARM_STATE["consensus_nodes"]:
-            if node["id"] == agent_id:
-                node["status"] = status
-                node["task"] = task
-                if agent_id == "qwen":
-                    node["active_model"] = MODEL_ASSIGNMENTS.get("qwen", "qwen-3.8-max")
-    elif category == "sub_agents":
-        for sub in SWARM_STATE["sub_agents"]:
-            if sub["id"] == agent_id:
-                sub["status"] = status
-                sub["task"] = task
-    recalculate_swarm_summary()
+    with _orchestrator_lock:
+        if category == "orchestrator":
+            SWARM_STATE["orchestrator"]["status"] = status
+            SWARM_STATE["orchestrator"]["task"] = task
+            SWARM_STATE["orchestrator"]["active_model"] = MODEL_ASSIGNMENTS.get("gemini", "gemini-3.1-pro-high")
+        elif category == "consensus_nodes":
+            for node in SWARM_STATE["consensus_nodes"]:
+                if node["id"] == agent_id:
+                    node["status"] = status
+                    node["task"] = task
+                    if agent_id == "qwen":
+                        node["active_model"] = MODEL_ASSIGNMENTS.get("qwen", "qwen-3.8-max")
+        elif category == "sub_agents":
+            found = False
+            for sub in SWARM_STATE["sub_agents"]:
+                if sub["id"] == agent_id:
+                    sub["status"] = status
+                    sub["task"] = task
+                    found = True
+                    break
+            if not found:
+                SWARM_STATE["sub_agents"].append({
+                    "id": agent_id,
+                    "name": agent_id.replace("_", " ").title(),
+                    "skill": "Specialist Sub-Agent",
+                    "role": "Level 3: Specialist Slot",
+                    "engine": "Local LFM Slot",
+                    "status": status,
+                    "task": task,
+                    "tools": ["read_file", "write_file", "search"]
+                })
+                SWARM_STATE["summary"]["subagent_slots"] = len(SWARM_STATE["sub_agents"])
+                SWARM_STATE["summary"]["total_nodes"] = 1 + len(SWARM_STATE["consensus_nodes"]) + len(SWARM_STATE["sub_agents"])
+        recalculate_swarm_summary()
 
 async def query_local_slot(prompt: str, system: str = "You are a specialized sub-agent.") -> str:
     payload = {
@@ -144,23 +181,42 @@ async def query_gemini(prompt: str, model_id: str = None) -> str:
 async def query_qwen_web(prompt: str) -> str:
     active_qwen = MODEL_ASSIGNMENTS.get("qwen", "qwen-3.8-max")
     update_agent_status("consensus_nodes", "qwen", "running", f"🔮 Querying {active_qwen} on chat.qwen.ai...")
-    if not QWEN_ORACLE_SCRIPT.exists() and not Path.home().joinpath("qwen_oracle.sh").exists():
-        return "Qwen Web Oracle standby (consensus verified locally)."
+
+    # Resolve the oracle script and require it to be executable. Previously any
+    # failure (missing script, non-executable bit, exec error) silently returned
+    # a canned "verified" string — fabricating adversarial consensus that never
+    # ran. We now surface the real state so the UI/loop can act on it honestly.
+    script = None
+    for cand in (QWEN_ORACLE_SCRIPT, Path.home() / "qwen_oracle.sh"):
+        if script_is_runnable(cand):
+            script = str(cand)
+            break
+
+    if not script:
+        exists = QWEN_ORACLE_SCRIPT.exists() or Path.home().joinpath("qwen_oracle.sh").exists()
+        reason = "not executable (chmod +x required)" if exists else "not configured on host"
+        update_agent_status("consensus_nodes", "qwen", "offline", f"Oracle {reason}")
+        return f"{QWEN_UNAVAILABLE_PREFIX} Qwen Web Oracle unavailable — script {reason}. Adversarial consensus was NOT performed."
+
     try:
-        script = str(QWEN_ORACLE_SCRIPT) if QWEN_ORACLE_SCRIPT.exists() else str(Path.home() / "qwen_oracle.sh")
         proc = await asyncio.create_subprocess_exec(
             script, "ask", active_qwen, prompt,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE
         )
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=20.0)
-        update_agent_status("consensus_nodes", "qwen", "ready", f"chat.qwen.ai session ({active_qwen})")
         if proc.returncode == 0 and stdout.strip():
-            return stdout.decode().strip()
-        return "Qwen Web Oracle: Invariants and threat boundaries verified."
+            update_agent_status("consensus_nodes", "qwen", "ready", f"chat.qwen.ai session ({active_qwen})")
+            return stdout.decode(errors="ignore").strip()
+        err = stderr.decode(errors="ignore").strip()[:160]
+        update_agent_status("consensus_nodes", "qwen", "offline", "Oracle returned no output")
+        return f"{QWEN_UNAVAILABLE_PREFIX} Qwen Web Oracle returned no answer (exit {proc.returncode}). Consensus NOT performed.{f' Detail: {err}' if err else ''}"
+    except asyncio.TimeoutError:
+        update_agent_status("consensus_nodes", "qwen", "offline", "Oracle timed out")
+        return f"{QWEN_UNAVAILABLE_PREFIX} Qwen Web Oracle timed out after 20s. Consensus NOT performed."
     except Exception as e:
-        update_agent_status("consensus_nodes", "qwen", "ready", "Consensus verified")
-        return "Qwen Web Oracle: Clean architecture and boundaries verified."
+        update_agent_status("consensus_nodes", "qwen", "offline", "Oracle execution error")
+        return f"{QWEN_UNAVAILABLE_PREFIX} Qwen Web Oracle execution failed: {e}. Consensus NOT performed."
 
 def plan_dynamic_swarm_for_task(message: str, has_repo: bool) -> List[Dict[str, Any]]:
     msg_lower = message.lower()
@@ -426,7 +482,19 @@ def plan_dynamic_swarm_for_task(message: str, has_repo: bool) -> List[Dict[str, 
             }
         ]
 
-async def execute_task_aware_swarm(sub_agents: List[Dict[str, Any]], repo_block: str, user_req: str, repo_path: str = "") -> Dict[str, str]:
+async def execute_task_aware_swarm(sub_agents: List[Dict[str, Any]], repo_block: str, user_req: str, repo_path: str = "", concurrency: int = 0) -> Dict[str, str]:
+    # The Cost-Based Optimizer's selected parallelism width (or the global
+    # MAX_CONCURRENT_AGENTS cap) genuinely bounds how many GPU slots run at once.
+    # Previously every agent was dispatched with an unbounded gather(), so the
+    # CBO's "Parallel: Nx" figure and MAX_CONCURRENT_AGENTS were purely cosmetic.
+    slot_limit = concurrency if concurrency and concurrency > 0 else MAX_CONCURRENT_AGENTS
+    slot_limit = max(1, min(slot_limit, MAX_CONCURRENT_AGENTS))
+    semaphore = asyncio.Semaphore(slot_limit)
+
+    async def _run_with_slot(coro):
+        async with semaphore:
+            return await coro
+
     tasks = {}
     rules_block = format_enforced_rules_prompt(repo_path)
     
@@ -449,7 +517,7 @@ async def execute_task_aware_swarm(sub_agents: List[Dict[str, Any]], repo_block:
             prompt = f"{rules_block}\n\n{repo_block}\n\n{c7_docs_context}\n\nUser Request: {user_req}\n\n{agent.get('prompt_template', '')}"
 
         update_agent_status("sub_agents", agent_id, "running", f"⚡ {agent['name']} ({agent['skill']}) thinking...")
-        tasks[agent_id] = query_local_slot(prompt, system=f"You are the {agent['name']} with specialized skill '{agent['skill']}'. Enforce Clean Architecture (small functions ≤30 lines, 1 domain class per file, Dependency Injection).")
+        tasks[agent_id] = _run_with_slot(query_local_slot(prompt, system=f"You are the {agent['name']} with specialized skill '{agent['skill']}'. Enforce Clean Architecture (small functions ≤30 lines, 1 domain class per file, Dependency Injection)."))
 
     results = await asyncio.gather(*tasks.values(), return_exceptions=True)
     
@@ -512,7 +580,10 @@ async def process_advisor_chat(message: str, repo_path: str = "", session_id: st
     route = route_request(message, has_repo=bool(ctx))
     update_agent_status("consensus_nodes", "lfm", "running", f"⚡ Hosting {len(planned_subagents)} concurrent GPU swarm slots...")
     
-    local_swarm_task = execute_task_aware_swarm(planned_subagents, repo_block, message, repo_path=repo_path)
+    local_swarm_task = execute_task_aware_swarm(
+        planned_subagents, repo_block, message, repo_path=repo_path,
+        concurrency=optimal_plan.parallelism_width
+    )
     
     qwen_task = None
     if "qwen" in route["selected"]:

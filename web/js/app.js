@@ -7,6 +7,8 @@
 let isServerConnected = true;
 let consecutiveFailures = 0;
 let activeSessionId = "";
+let activeLoopSessionId = "";
+let allLoopSessions = [];
 let promptHistory = [];
 let historyIndex = -1;
 let tempDraft = "";
@@ -22,6 +24,240 @@ let debugPollInterval = null;
 let currentModalContent = "";
 let currentModalFilename = "";
 let pendingBranchSwitch = null;
+
+// ─────────────────────────────────────────────────────────────
+// DRAGGABLE SPLIT PANES & RESIZERS CONTROLLER
+// ─────────────────────────────────────────────────────────────
+const DEFAULT_PANE_WIDTHS = {
+  chatSidebar: 260,
+  ghdLeft: 380,
+  loopLeft: 600
+};
+
+function getSavedPaneWidth(paneKey, defaultVal) {
+  try {
+    const saved = JSON.parse(localStorage.getItem('swarm_pane_widths') || '{}');
+    return (typeof saved[paneKey] === 'number') ? saved[paneKey] : defaultVal;
+  } catch (e) {
+    return defaultVal;
+  }
+}
+
+function savePaneWidth(paneKey, width) {
+  try {
+    const saved = JSON.parse(localStorage.getItem('swarm_pane_widths') || '{}');
+    saved[paneKey] = Math.round(width);
+    localStorage.setItem('swarm_pane_widths', JSON.stringify(saved));
+  } catch (e) {}
+}
+
+function initSplitResizers() {
+  const configs = [
+    {
+      resizerId: 'chatSidebarResizer',
+      paneId: 'chatSidebar',
+      key: 'chatSidebar',
+      min: 180,
+      max: () => Math.min(window.innerWidth * 0.45, 480),
+      defaultWidth: DEFAULT_PANE_WIDTHS.chatSidebar
+    },
+    {
+      resizerId: 'ghdSplitResizer',
+      paneId: 'ghdLeftPane',
+      key: 'ghdLeft',
+      min: 260,
+      max: () => {
+        const container = document.getElementById('ghdSplitView');
+        const cWidth = container ? container.getBoundingClientRect().width : window.innerWidth;
+        return Math.min(cWidth * 0.75, cWidth - 280);
+      },
+      defaultWidth: DEFAULT_PANE_WIDTHS.ghdLeft
+    },
+    {
+      resizerId: 'loopSplitResizer',
+      paneId: 'loopLeftPane',
+      key: 'loopLeft',
+      min: 320,
+      max: () => {
+        const container = document.getElementById('loopSplitContainer');
+        const cWidth = container ? container.getBoundingClientRect().width : window.innerWidth;
+        return Math.min(cWidth * 0.75, cWidth - 320);
+      },
+      defaultWidth: DEFAULT_PANE_WIDTHS.loopLeft
+    }
+  ];
+
+  configs.forEach(cfg => {
+    const resizer = document.getElementById(cfg.resizerId);
+    const pane = document.getElementById(cfg.paneId);
+    if (!resizer || !pane) return;
+
+    // Apply saved width if desktop
+    if (window.innerWidth > 768) {
+      const savedWidth = getSavedPaneWidth(cfg.key, cfg.defaultWidth);
+      pane.style.width = `${savedWidth}px`;
+    }
+
+    // Double click to reset to default width
+    resizer.addEventListener('dblclick', () => {
+      pane.style.width = `${cfg.defaultWidth}px`;
+      savePaneWidth(cfg.key, cfg.defaultWidth);
+      showToast(`Reset pane width to ${cfg.defaultWidth}px`, "info", 1500);
+    });
+
+    let startX = 0;
+    let startWidth = 0;
+    let isDragging = false;
+
+    const onPointerDown = (clientX) => {
+      if (window.innerWidth <= 768) return;
+      isDragging = true;
+      startX = clientX;
+      startWidth = pane.getBoundingClientRect().width;
+      resizer.classList.add('active');
+      document.body.classList.add('resizing');
+    };
+
+    const onPointerMove = (clientX) => {
+      if (!isDragging) return;
+      const deltaX = clientX - startX;
+      let newWidth = startWidth + deltaX;
+      const maxW = typeof cfg.max === 'function' ? cfg.max() : cfg.max;
+      if (newWidth < cfg.min) newWidth = cfg.min;
+      if (newWidth > maxW) newWidth = maxW;
+      pane.style.width = `${newWidth}px`;
+    };
+
+    const onPointerUp = () => {
+      if (!isDragging) return;
+      isDragging = false;
+      resizer.classList.remove('active');
+      document.body.classList.remove('resizing');
+      const finalWidth = pane.getBoundingClientRect().width;
+      savePaneWidth(cfg.key, finalWidth);
+    };
+
+    // Mouse events
+    resizer.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      onPointerDown(e.clientX);
+    });
+
+    // Touch events
+    resizer.addEventListener('touchstart', (e) => {
+      if (e.touches && e.touches.length === 1) {
+        onPointerDown(e.touches[0].clientX);
+      }
+    }, { passive: true });
+
+    window.addEventListener('mousemove', (e) => {
+      if (isDragging) {
+        e.preventDefault();
+        onPointerMove(e.clientX);
+      }
+    });
+
+    window.addEventListener('touchmove', (e) => {
+      if (isDragging && e.touches && e.touches.length === 1) {
+        onPointerMove(e.touches[0].clientX);
+      }
+    }, { passive: true });
+
+    window.addEventListener('mouseup', onPointerUp);
+    window.addEventListener('touchend', onPointerUp);
+    window.addEventListener('touchcancel', onPointerUp);
+  });
+}
+
+// ─────────────────────────────────────────────────────────────
+// MOBILE RESPONSIVE TOGGLES (GHD SINGLE COLUMN & CHAT DRAWER)
+// ─────────────────────────────────────────────────────────────
+function toggleGhdMobileView(mode) {
+  const splitView = document.getElementById('ghdSplitView');
+  const backBtn = document.getElementById('ghdMobileBackBtn');
+  if (!splitView) return;
+
+  if (mode === 'diff') {
+    splitView.classList.add('mobile-diff-active');
+    if (backBtn) backBtn.style.display = 'inline-flex';
+  } else {
+    splitView.classList.remove('mobile-diff-active');
+    if (backBtn) backBtn.style.display = 'none';
+  }
+}
+
+function toggleMobileChatSidebar(forceState) {
+  const sidebar = document.getElementById('chatSidebar');
+  const backdrop = document.getElementById('chatSidebarBackdrop');
+  if (!sidebar) return;
+
+  const shouldOpen = (typeof forceState === 'boolean') ? forceState : !sidebar.classList.contains('open');
+  if (shouldOpen) {
+    sidebar.classList.add('open');
+    if (backdrop) backdrop.classList.add('active');
+  } else {
+    sidebar.classList.remove('open');
+    if (backdrop) backdrop.classList.remove('active');
+  }
+}
+
+// ─────────────────────────────────────────────────────────────
+// AUTO-DEV LOOP LIVE STREAM & ACTION RECORDER
+// ─────────────────────────────────────────────────────────────
+let loopLiveStreamLogs = [];
+let lastLoopTaskStateKey = "";
+
+function appendLoopLiveLog(text, level = 'info', tag = 'LOOP') {
+  const stream = document.getElementById('loopLiveLogStream');
+  if (!stream) return;
+
+  const now = new Date();
+  const timeStr = now.toTimeString().split(' ')[0];
+  const entry = { time: timeStr, text, level, tag };
+  loopLiveStreamLogs.push(entry);
+  if (loopLiveStreamLogs.length > 80) loopLiveStreamLogs.shift();
+
+  renderLoopLiveStream();
+}
+
+function clearLoopLiveStream() {
+  loopLiveStreamLogs = [];
+  const stream = document.getElementById('loopLiveLogStream');
+  if (stream) {
+    stream.innerHTML = '<div style="color:var(--text-muted); padding:8px 0; font-size:11.5px;">Stream cleared. Awaiting new events...</div>';
+  }
+  showToast("Live stream log cleared", "info", 1500);
+}
+
+function renderLoopLiveStream() {
+  const stream = document.getElementById('loopLiveLogStream');
+  if (!stream) return;
+  if (loopLiveStreamLogs.length === 0) {
+    stream.innerHTML = '<div style="color:var(--text-muted); padding:8px 0; font-size:11.5px;">Awaiting Autonomous Swarm execution events...</div>';
+    return;
+  }
+
+  stream.innerHTML = loopLiveStreamLogs.map(l => {
+    const tagColors = {
+      LOOP: 'var(--accent)',
+      TASK: 'var(--green)',
+      JUDGE: 'var(--amber)',
+      ADVISOR: 'var(--purple)',
+      ERROR: 'var(--rose)',
+      WARN: 'var(--orange)'
+    };
+    const color = tagColors[l.tag] || 'var(--accent)';
+    return `
+      <div class="loop-log-line">
+        <span class="loop-log-time">[${escapeHtml(l.time)}]</span>
+        <span class="loop-log-tag" style="color:${color};">[${escapeHtml(l.tag)}]</span>
+        <span style="color:var(--text-bright);">${escapeHtml(l.text)}</span>
+      </div>
+    `;
+  }).join('');
+
+  stream.scrollTop = stream.scrollHeight;
+}
 
 // ─────────────────────────────────────────────────────────────
 // TOAST NOTIFICATION SYSTEM (AUTO-DISMISS, NON-INTRUSIVE)
@@ -140,12 +376,16 @@ function switchTab(tabId) {
   document.getElementById('tabChatBtn').className = (tabId === 'chat') ? 'tab-btn active' : 'tab-btn';
   document.getElementById('tabLoopBtn').className = (tabId === 'loop') ? 'tab-btn active' : 'tab-btn';
   document.getElementById('tabGitBtn').className = (tabId === 'git') ? 'tab-btn active' : 'tab-btn';
+  const cBtn = document.getElementById('tabContractsBtn');
+  if (cBtn) cBtn.className = (tabId === 'contracts') ? 'tab-btn active' : 'tab-btn';
   document.getElementById('tabTopoBtn').className = (tabId === 'topo') ? 'tab-btn active' : 'tab-btn';
   document.getElementById('tabVaultBtn').className = (tabId === 'vault') ? 'tab-btn active' : 'tab-btn';
   
   document.getElementById('tabChat').className = (tabId === 'chat') ? 'tab-content active' : 'tab-content';
   document.getElementById('tabLoop').className = (tabId === 'loop') ? 'tab-content active' : 'tab-content';
   document.getElementById('tabGit').className = (tabId === 'git') ? 'tab-content active' : 'tab-content';
+  const cTab = document.getElementById('tabContracts');
+  if (cTab) cTab.className = (tabId === 'contracts') ? 'tab-content active' : 'tab-content';
   document.getElementById('tabTopo').className = (tabId === 'topo') ? 'tab-content active' : 'tab-content';
   document.getElementById('tabVault').className = (tabId === 'vault') ? 'tab-content active' : 'tab-content';
 
@@ -154,11 +394,10 @@ function switchTab(tabId) {
 
   if (tabId === 'git') loadGitHubDesktopState();
   if (tabId === 'vault') loadArtifactsVault();
+  if (tabId === 'contracts') loadContractsCatalog();
   if (tabId === 'loop') {
-    pollLoopState();
-    if (!loopPollInterval) loopPollInterval = setInterval(pollLoopState, 1200);
-  } else {
-    if (loopPollInterval) { clearInterval(loopPollInterval); loopPollInterval = null; }
+    loadLoopSessionsList();
+    pollLoopState();  // instant one-shot; live updates arrive via the SSE stream
   }
 }
 
@@ -181,8 +420,163 @@ function parseMarkdown(md) {
 }
 
 // ─────────────────────────────────────────────────────────────
-// AUTONOMOUS LOOP AGENT CONTROLLER (AUTO-DEV SWARM)
+// AUTONOMOUS LOOP AGENT CONTROLLER (AUTO-DEV SWARM & SESSIONS)
 // ─────────────────────────────────────────────────────────────
+async function loadLoopSessionsList() {
+  try {
+    const res = await fetch('/api/loop/sessions', { cache: 'no-store' });
+    const list = await res.json();
+    allLoopSessions = list || [];
+    const sel = document.getElementById('loopSessionSelect');
+    if (!sel) return;
+    sel.innerHTML = '';
+
+    if (!allLoopSessions || allLoopSessions.length === 0) {
+      sel.innerHTML = '<option value="">No loop sessions</option>';
+      return;
+    }
+
+    if (!activeLoopSessionId) {
+      activeLoopSessionId = allLoopSessions[0].id || allLoopSessions[0].session_id;
+    }
+
+    allLoopSessions.forEach(s => {
+      const opt = document.createElement('option');
+      const sId = s.id || s.session_id;
+      opt.value = sId;
+      const statusIcons = {
+        running: '🟢',
+        completed: '✅',
+        paused: '⏸️',
+        interrupted: '⚠️',
+        recovering: '🔄',
+        failed: '❌',
+        idle: '⏹️'
+      };
+      const statusLabels = {
+        interrupted: 'interrupted / recoverable',
+        recovering: 'recovering...',
+        running: 'running',
+        completed: 'completed',
+        paused: 'paused',
+        failed: 'failed',
+        idle: 'idle'
+      };
+      const icon = statusIcons[s.status] || '🔄';
+      const label = statusLabels[s.status] || s.status || 'idle';
+      const title = s.title || s.name || s.goal || 'Untitled Loop Run';
+      opt.innerText = `${icon} ${title} (${label})`;
+      if (sId === activeLoopSessionId) opt.selected = true;
+      sel.appendChild(opt);
+    });
+  } catch(e) { handleServerDisconnected(); }
+}
+
+async function onLoopSessionChanged() {
+  const sel = document.getElementById('loopSessionSelect');
+  if (!sel || !sel.value) return;
+  activeLoopSessionId = sel.value;
+  try {
+    const res = await fetch(`/api/loop/sessions/${encodeURIComponent(activeLoopSessionId)}/select`, { method: 'POST' });
+    const data = await res.json();
+    if (data.state) {
+      renderLoopDashboard(data.state);
+    } else {
+      await pollLoopState();
+    }
+    showToast("Switched Auto-Dev Loop session", "info", 1800);
+  } catch(e) { handleServerDisconnected(); }
+}
+
+async function createNewLoopSessionUI() {
+  try {
+    const res = await fetch('/api/loop/sessions/new', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        title: 'New Auto-Dev Loop',
+        goal: '',
+        repo_path: currentRepoPath
+      })
+    });
+    const data = await res.json();
+    activeLoopSessionId = data.id || data.session_id;
+    const goalInput = document.getElementById('loopGoalInput');
+    if (goalInput) goalInput.value = '';
+    await loadLoopSessionsList();
+    await pollLoopState();
+    showToast("✓ Created new Auto-Dev Loop session", "success");
+  } catch(e) { showToast("Error: " + e.message, "error"); }
+}
+
+async function deleteCurrentLoopSessionUI() {
+  if (!activeLoopSessionId) return;
+  if (!confirm("Are you sure you want to delete this Auto-Dev Loop session?")) return;
+  try {
+    await fetch('/api/loop/sessions/delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: activeLoopSessionId })
+    });
+    activeLoopSessionId = "";
+    showToast("Loop session deleted", "info");
+    await loadLoopSessionsList();
+    await pollLoopState();
+  } catch(e) { showToast("Error: " + e.message, "error"); }
+}
+
+async function transferAdvisorChatToLoop(customGoal = null, autoStart = true) {
+  showToast("🚀 Synthesizing and transferring Advisor blueprint to Auto-Dev Loop...", "info", 3000);
+  try {
+    const res = await fetch('/api/advisor/transfer_to_loop', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        session_id: activeSessionId,
+        custom_goal: customGoal || "",
+        auto_start: autoStart,
+        repo_path: currentRepoPath
+      })
+    });
+    const data = await res.json();
+    if (data.success) {
+      activeLoopSessionId = data.loop_session_id || data.session_id;
+      switchTab('loop');
+      const goalInput = document.getElementById('loopGoalInput');
+      if (goalInput && data.goal) {
+        goalInput.value = data.goal;
+      }
+      await loadLoopSessionsList();
+      if (data.state) {
+        renderLoopDashboard(data.state);
+      } else {
+        await pollLoopState();
+      }
+      showToast("🚀 Transferred to Auto-Dev Loop! Autonomous execution started.", "success", 4000);
+    } else {
+      showToast("Transfer failed: " + (data.error || "Unknown error"), "error", 4500);
+    }
+  } catch(e) {
+    showToast("Transfer error: " + e.message, "error");
+  }
+}
+
+async function jumpToLinkedAdvisorSession(advId) {
+  if (!advId) {
+    try {
+      const res = await fetch('/api/loop/status', { cache: 'no-store' });
+      const state = await res.json();
+      advId = state.advisor_session_id;
+    } catch(e) {}
+  }
+  if (advId) {
+    activeSessionId = advId;
+    switchTab('chat');
+    await loadSessionsList();
+    showToast(`Loaded linked Advisor Chat session`, "info", 2000);
+  }
+}
+
 async function startAutonomousLoop() {
   const goal = document.getElementById('loopGoalInput').value.trim();
   if (!goal) {
@@ -194,11 +588,19 @@ async function startAutonomousLoop() {
     const res = await fetch('/api/loop/start', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ goal: goal, repo_path: currentRepoPath })
+      body: JSON.stringify({
+        goal: goal,
+        repo_path: currentRepoPath,
+        session_id: activeLoopSessionId
+      })
     });
     const data = await res.json();
     if (data.success) {
+      if (data.loop_id || data.session_id) {
+        activeLoopSessionId = data.loop_id || data.session_id;
+      }
       showToast("🚀 Autonomous Swarm Loop started!", "success");
+      await loadLoopSessionsList();
       pollLoopState();
     } else {
       showToast("Loop Error: " + data.error, "error", 4500);
@@ -213,14 +615,25 @@ async function pauseAutonomousLoop() {
   try {
     await fetch('/api/loop/pause', { method: 'POST' });
     showToast("⏸️ Swarm loop paused", "info");
+    await loadLoopSessionsList();
     pollLoopState();
   } catch(e) { handleServerDisconnected(); }
 }
 
 async function resumeAutonomousLoop() {
   try {
-    await fetch('/api/loop/resume', { method: 'POST' });
-    showToast("▶️ Swarm loop resumed", "info");
+    const res = await fetch('/api/loop/resume', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ session_id: activeLoopSessionId })
+    });
+    const data = await res.json();
+    if (data.success) {
+      showToast("▶️ Swarm loop resumed from checkpoint", "success");
+    } else {
+      showToast("Resume error: " + (data.error || "Failed"), "error");
+    }
+    await loadLoopSessionsList();
     pollLoopState();
   } catch(e) { handleServerDisconnected(); }
 }
@@ -229,6 +642,7 @@ async function stopAutonomousLoop() {
   try {
     await fetch('/api/loop/stop', { method: 'POST' });
     showToast("⏹️ Swarm loop stopped", "warn");
+    await loadLoopSessionsList();
     pollLoopState();
   } catch(e) { handleServerDisconnected(); }
 }
@@ -253,49 +667,159 @@ async function pollLoopState() {
 }
 
 function renderLoopDashboard(state) {
+  if (!state) return;
+
+  const currentId = state.id || state.session_id;
+  if (currentId && currentId !== activeLoopSessionId) {
+    activeLoopSessionId = currentId;
+  }
+
+  // Update session dropdown selection if available
+  const sel = document.getElementById('loopSessionSelect');
+  if (sel && activeLoopSessionId && sel.value !== activeLoopSessionId) {
+    sel.value = activeLoopSessionId;
+  }
+
+  // Linked Advisor Badge
+  const linkedAdvBadge = document.getElementById('loopLinkedAdvisorBadge');
+  if (linkedAdvBadge) {
+    if (state.advisor_session_id) {
+      linkedAdvBadge.style.display = 'inline-flex';
+      linkedAdvBadge.innerText = `💬 Linked Advisor Chat (${state.advisor_session_id.substring(0, 12)}...) ↗`;
+      linkedAdvBadge.onclick = () => jumpToLinkedAdvisorSession(state.advisor_session_id);
+    } else {
+      linkedAdvBadge.style.display = 'none';
+    }
+  }
+
+  // Auto-populate goal input if empty
+  const goalInput = document.getElementById('loopGoalInput');
+  if (goalInput && !goalInput.value && state.goal) {
+    goalInput.value = state.goal;
+  }
+
   const statusBadge = document.getElementById('loopStatusBadge');
   const startBtn = document.getElementById('loopStartBtn');
+  const resumeBtn = document.getElementById('loopResumeBtn');
   const pauseBtn = document.getElementById('loopPauseBtn');
   const stopBtn = document.getElementById('loopStopBtn');
 
   if (statusBadge) {
-    const s = (state.status || 'idle').toUpperCase();
-    statusBadge.innerText = s;
-    statusBadge.className = `status-badge ${s === 'RUNNING' ? 'badge-running' : (s === 'COMPLETED' ? 'badge-online' : 'badge-idle')}`;
+    const rawStatus = (state.status || 'idle').toLowerCase();
+    if (rawStatus === 'interrupted') {
+      statusBadge.innerText = '⚠️ INTERRUPTED / RECOVERABLE';
+      statusBadge.className = 'status-badge badge-interrupted';
+    } else if (rawStatus === 'recovering') {
+      statusBadge.innerText = '🔄 RECOVERING...';
+      statusBadge.className = 'status-badge badge-running';
+    } else if (rawStatus === 'paused') {
+      statusBadge.innerText = '⏸️ PAUSED';
+      statusBadge.className = 'status-badge badge-paused';
+    } else if (rawStatus === 'running') {
+      statusBadge.innerText = '🟢 RUNNING';
+      statusBadge.className = 'status-badge badge-running';
+    } else if (rawStatus === 'completed') {
+      statusBadge.innerText = '✅ COMPLETED';
+      statusBadge.className = 'status-badge badge-online';
+    } else if (rawStatus === 'failed') {
+      statusBadge.innerText = '❌ FAILED';
+      statusBadge.className = 'status-badge badge-offline';
+    } else {
+      statusBadge.innerText = 'IDLE';
+      statusBadge.className = 'status-badge badge-idle';
+    }
   }
 
   if (startBtn && pauseBtn && stopBtn) {
-    if (state.status === 'running') {
+    const rawStatus = (state.status || 'idle').toLowerCase();
+    if (rawStatus === 'running') {
       startBtn.style.display = 'none';
+      if (resumeBtn) resumeBtn.style.display = 'none';
       pauseBtn.style.display = 'inline-flex';
       pauseBtn.innerText = '⏸️ Pause';
       stopBtn.style.display = 'inline-flex';
-    } else if (state.status === 'paused') {
+    } else if (rawStatus === 'paused') {
       startBtn.style.display = 'none';
-      pauseBtn.style.display = 'inline-flex';
-      pauseBtn.innerText = '▶️ Resume';
+      pauseBtn.style.display = 'none';
+      if (resumeBtn) {
+        resumeBtn.style.display = 'inline-flex';
+        resumeBtn.innerText = '▶️ Resume Loop';
+        resumeBtn.style.background = 'var(--orange)';
+      }
+      stopBtn.style.display = 'inline-flex';
+    } else if (rawStatus === 'interrupted') {
+      startBtn.style.display = 'none';
+      pauseBtn.style.display = 'none';
+      if (resumeBtn) {
+        resumeBtn.style.display = 'inline-flex';
+        resumeBtn.innerText = '▶️ Resume Loop (Recover)';
+        resumeBtn.style.background = 'var(--orange)';
+      }
       stopBtn.style.display = 'inline-flex';
     } else {
       startBtn.style.display = 'inline-flex';
+      if (resumeBtn) resumeBtn.style.display = 'none';
       pauseBtn.style.display = 'none';
       stopBtn.style.display = 'none';
     }
   }
 
-  // Render Active Sub-Agent
+  // Render Active Sub-Agent & GitHub Tracking Issue
   const activeBox = document.getElementById('loopActiveAgentBox');
   if (activeBox) {
-    if (state.active_subagent) {
-      const sa = state.active_subagent;
-      activeBox.innerHTML = `
-        <div style="display:flex; justify-content:space-between; align-items:center;">
-          <span style="font-weight:800; color:#ffffff; font-size:13.5px;">⚡ Active: ${escapeHtml(sa.name)}</span>
-          <span class="file-status-badge status-a">${escapeHtml(sa.slot)}</span>
-        </div>
-        <div style="font-size:12px; color:var(--accent); font-family:monospace; margin-top:2px;">
-          Working on: <b>${escapeHtml(sa.task_title)}</b>
+    let html = '';
+    if (state.github_issue && state.github_issue.url) {
+      const issueNum = state.github_issue.issue_number ? `#${state.github_issue.issue_number}` : 'Issue';
+      html += `
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px; padding-bottom:6px; border-bottom:1px solid var(--ink-500);">
+          <span style="font-size:12px; font-weight:700; color:var(--text);">🐙 GitHub Tracker:</span>
+          <a href="${escapeHtml(state.github_issue.url)}" target="_blank" style="font-family:var(--font-mono); font-size:11.5px; color:var(--accent); font-weight:700; text-decoration:none; background:var(--ink-700); padding:2px 8px; border-radius:4px; border:1px solid var(--line-strong);">
+            ${escapeHtml(issueNum)} ↗
+          </a>
         </div>
       `;
+    }
+
+    if (state.active_subagents && state.active_subagents.length > 1) {
+      let multiHtml = `
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; padding-bottom:6px; border-bottom:1px solid var(--ink-500);">
+          <span style="font-weight:700; color:var(--accent); font-size:13.5px;">⚡ Parallel Fan-Out: ${state.active_subagents.length} / 8 Agents Active</span>
+          <span class="file-status-badge status-a" style="background:var(--green-soft); color:var(--green); border-color:var(--green-strong);">PARALLEL CONCURRENCY</span>
+        </div>
+        <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(240px, 1fr)); gap:8px;">
+      `;
+      state.active_subagents.forEach(sa => {
+        multiHtml += `
+          <div style="background:var(--ink-900); border:1px solid var(--ink-500); border-left:3px solid var(--green); border-radius:6px; padding:6px 10px;">
+            <div style="display:flex; justify-content:space-between; align-items:center;">
+              <span style="font-weight:700; color:var(--text-bright); font-size:12px;">${escapeHtml(sa.name)}</span>
+              <span style="font-size:9.5px; font-family:var(--font-mono); color:var(--green); font-weight:700;">RUNNING</span>
+            </div>
+            <div style="font-size:10.5px; color:var(--text-muted);">${escapeHtml(sa.slot || '')}</div>
+            <div style="font-size:11px; color:var(--accent); font-family:var(--font-mono); margin-top:2px;">
+              ${escapeHtml(sa.status || 'Executing')}
+            </div>
+          </div>
+        `;
+      });
+      multiHtml += `</div>`;
+      activeBox.innerHTML = html + multiHtml;
+      activeBox.style.display = 'block';
+    } else if (state.active_subagent) {
+      const sa = state.active_subagent;
+      html += `
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+          <span style="font-weight:700; color:var(--text-bright); font-size:13.5px;">⚡ Active: ${escapeHtml(sa.name)}</span>
+          <span class="file-status-badge status-a">${escapeHtml(sa.slot || '')}</span>
+        </div>
+        <div style="font-size:12px; color:var(--accent); font-family:var(--font-mono); margin-top:2px;">
+          Working on: <b>${escapeHtml(sa.task_title || '')}</b> (${escapeHtml(sa.status || 'Active')})
+        </div>
+      `;
+      activeBox.innerHTML = html;
+      activeBox.style.display = 'block';
+    } else if (state.github_issue) {
+      activeBox.innerHTML = html;
       activeBox.style.display = 'block';
     } else {
       activeBox.style.display = 'none';
@@ -307,32 +831,47 @@ function renderLoopDashboard(state) {
   if (taskContainer) {
     const tasks = state.tasks || [];
     if (tasks.length === 0) {
-      taskContainer.innerHTML = '<div style="color:var(--text-muted); padding:16px; text-align:center; grid-column:1/-1;">No tasks scheduled yet. Start a goal to decompose into PM, Dev, QA, and Review stages.</div>';
+      taskContainer.innerHTML = '<div style="color:var(--text-muted); padding:16px; text-align:center; grid-column:1/-1;">No tasks scheduled yet. Start a goal to run Pre-Flight Research and Zero-Trust Multi-Agent Verification.</div>';
     } else {
       taskContainer.innerHTML = '';
       tasks.forEach((t) => {
         const card = document.createElement('div');
-        const isCurrent = (t.id === state.current_task_id && state.status === 'running');
+        const isCurrent = (
+          t.id === state.current_task_id ||
+          (state.current_task_ids && state.current_task_ids.includes(t.id)) ||
+          t.status === 'in_progress'
+        ) && (state.status === 'running' || state.status === 'recovering');
+
         card.className = `task-pipeline-card ${isCurrent ? 'in-progress' : (t.status === 'completed' ? 'completed' : '')}`;
         
         const roleColors = {
           pm: 'status-u',
           dev: 'status-m',
           qa: 'status-a',
-          review: 'status-d'
+          review: 'status-d',
+          oracle: 'status-u'
         };
         const badgeClass = roleColors[t.role] || 'status-u';
 
+        const attemptsHtml = t.attempts ? `<span style="font-size:10px; font-family:var(--font-mono); background:var(--ink-500); color:var(--accent); padding:1px 5px; border-radius:4px;">Attempt ${t.attempts}/3</span>` : '';
+        const skillHtml = t.injected_skill ? `<div style="font-family:var(--font-mono); font-size:10.5px; color:var(--accent); background:var(--ink-900); padding:2px 6px; border-radius:4px; border:1px solid var(--ink-500);">🎯 Skill: ${escapeHtml(t.injected_skill)}</div>` : '';
+        const certHtml = t.judge_certificate ? `<div style="font-size:10.5px; color:var(--green); background:var(--green-soft); padding:3px 6px; border-radius:4px; border:1px solid var(--green-strong); font-weight:700;">⚖️ Auto-Judge Verified</div>` : '';
+
         card.innerHTML = `
           <div style="display:flex; justify-content:space-between; align-items:center;">
-            <span class="file-status-badge ${badgeClass}">${escapeHtml(t.role.toUpperCase())}</span>
-            <span style="font-size:11px; font-family:monospace; font-weight:800; color:${t.status === 'completed' ? 'var(--green)' : (isCurrent ? 'var(--accent)' : 'var(--text-muted)')};">
+            <div style="display:flex; align-items:center; gap:6px;">
+              <span class="file-status-badge ${badgeClass}">${escapeHtml(t.role.toUpperCase())}</span>
+              ${attemptsHtml}
+            </div>
+            <span style="font-size:11px; font-family:var(--font-mono); font-weight:700; color:${t.status === 'completed' ? 'var(--green)' : (isCurrent ? 'var(--accent)' : 'var(--text-muted)')};">
               ${isCurrent ? '⚡ IN PROGRESS' : escapeHtml(t.status.toUpperCase())}
             </span>
           </div>
-          <div style="font-weight:700; color:#ffffff; font-size:13px; line-height:1.4;">${escapeHtml(t.title)}</div>
-          <div style="font-size:11.5px; color:#cbd5e1;">${escapeHtml(t.description || '')}</div>
-          <div style="font-family:monospace; font-size:11px; color:#93c5fd; background:#070a12; padding:4px 8px; border-radius:4px; border:1px solid #1e293b;">
+          <div style="font-weight:700; color:var(--text-bright); font-size:13px; line-height:1.4;">${escapeHtml(t.title)}</div>
+          <div style="font-size:11.5px; color:var(--text);">${escapeHtml(t.description || '')}</div>
+          ${skillHtml}
+          ${certHtml}
+          <div style="font-family:var(--font-mono); font-size:11px; color:var(--accent); background:var(--ink-900); padding:4px 8px; border-radius:4px; border:1px solid var(--ink-500);">
             🤖 Assigned: ${escapeHtml(t.assigned_agent)}
           </div>
         `;
@@ -354,8 +893,8 @@ function renderLoopDashboard(state) {
         div.className = 'advisor-ping-card';
         div.innerHTML = `
           <div style="display:flex; justify-content:space-between; align-items:center;">
-            <span style="font-size:11.5px; font-weight:800; color:#c084fc;">📡 ${escapeHtml(p.subagent)} ➔ 👑 Lead Advisor</span>
-            <span style="font-size:10.5px; font-family:monospace; color:var(--text-muted);">${escapeHtml(p.timestamp)} (${p.duration}s)</span>
+            <span style="font-size:11.5px; font-weight:700; color:var(--purple);">📡 ${escapeHtml(p.subagent)} ➔ 👑 Lead Advisor</span>
+            <span style="font-size:10.5px; font-family:var(--font-mono); color:var(--text-muted);">${escapeHtml(p.timestamp)} (${p.duration}s)</span>
           </div>
           <div class="advisor-ping-q">❓ "${escapeHtml(p.question)}"</div>
           <div class="advisor-ping-a markdown-body">${parseMarkdown(p.answer)}</div>
@@ -365,14 +904,43 @@ function renderLoopDashboard(state) {
     }
   }
 
-  // Render Final Summary Artifact if complete
+  // Render Final Summary & Verification Certificate if complete
   const finalSummaryDiv = document.getElementById('loopFinalSummaryContainer');
   if (finalSummaryDiv) {
-    if (state.final_summary && state.status === 'completed') {
+    const summaryText = state.final_summary || state.verification_certificate || "";
+    if (summaryText && (state.status === 'completed' || state.status === 'idle')) {
       finalSummaryDiv.style.display = 'block';
-      document.getElementById('loopFinalSummaryContent').innerHTML = parseMarkdown(state.final_summary);
+      document.getElementById('loopFinalSummaryContent').innerHTML = parseMarkdown(summaryText);
     } else {
       finalSummaryDiv.style.display = 'none';
+    }
+  }
+
+  // Update Live Telemetry Stream with status changes
+  const stateKey = `${state.id || ''}_${state.status}_${state.current_step}_${state.tasks ? state.tasks.map(t=>t.status).join(',') : ''}_${(state.advisor_pings || []).length}`;
+  if (stateKey !== lastLoopTaskStateKey) {
+    lastLoopTaskStateKey = stateKey;
+    if (state.status === 'running') {
+      const activeTask = (state.tasks || []).find(t => t.status === 'in-progress' || t.status === 'running');
+      if (activeTask) {
+        appendLoopLiveLog(`Task active: "${activeTask.title}" assigned to [${activeTask.assigned_agent}]`, 'info', 'TASK');
+      } else {
+        appendLoopLiveLog(`Loop iteration step ${state.current_step || 1} executing. Status: ${state.status.toUpperCase()}`, 'info', 'LOOP');
+      }
+    } else if (state.status === 'completed') {
+      appendLoopLiveLog(`All pipeline tasks completed with full verification certificate.`, 'success', 'JUDGE');
+    } else if (state.status === 'failed') {
+      appendLoopLiveLog(`Loop execution encountered failure state.`, 'error', 'ERROR');
+    }
+    
+    // Check if new advisor ping
+    const pings = state.advisor_pings || [];
+    if (pings.length > 0) {
+      const latestPing = pings[pings.length - 1];
+      if (latestPing && latestPing._logged !== true) {
+        latestPing._logged = true;
+        appendLoopLiveLog(`Advisor Ping: ${latestPing.subagent} asked "${latestPing.question.substring(0, 48)}..."`, 'info', 'ADVISOR');
+      }
     }
   }
 }
@@ -382,12 +950,20 @@ function setLoopGoalPrompt(text) {
 }
 
 // ─────────────────────────────────────────────────────────────
-// FULL GITHUB DESKTOP CLIENT LOGIC
+// FULL GITHUB DESKTOP CLIENT & CUSTOM CONTEXT MENU ENGINE
 // ─────────────────────────────────────────────────────────────
+let diffViewMode = 'unified';
+let currentRawDiff = '';
+let activeGhdSubTab = 'changes';
+let allHistoryCommits = [];
+let allGithubIssues = [];
+let issueStateFilter = 'open';
+let confirmActionCallback = null;
+
 async function loadGitHubDesktopState() {
   try {
     const controller = new AbortController();
-    const tId = setTimeout(() => controller.abort(), 2000);
+    const tId = setTimeout(() => controller.abort(), 3500);
     const res = await fetch(`/api/git/overview?repo_path=${encodeURIComponent(currentRepoPath)}`, { cache: 'no-store', signal: controller.signal });
     clearTimeout(tId);
     
@@ -405,30 +981,66 @@ async function loadGitHubDesktopState() {
       return;
     }
 
-    document.getElementById('ghdRepoName').innerText = data.repo_name;
-    document.getElementById('ghdCurrentBranch').innerText = data.branch;
-    document.getElementById('commitTargetBranch').innerText = data.branch;
+    document.getElementById('ghdRepoName').innerText = data.repo_name || "Repository";
+    document.getElementById('ghdCurrentBranch').innerText = data.branch || "main";
+    document.getElementById('commitTargetBranch').innerText = data.branch || "main";
     
-    document.getElementById('ghdAheadCount').innerText = data.ahead || 0;
-    document.getElementById('ghdBehindCount').innerText = data.behind || 0;
-    document.getElementById('ghdChangesCount').innerText = data.changed_files ? data.changed_files.length : 0;
+    const aheadCount = data.ahead || 0;
+    const behindCount = data.behind || 0;
+    const aheadEl = document.getElementById('ghdAheadCount');
+    const behindEl = document.getElementById('ghdBehindCount');
+    
+    if (aheadEl) {
+      aheadEl.innerText = aheadCount;
+      aheadEl.style.display = aheadCount > 0 ? 'inline-block' : 'none';
+    }
+    if (behindEl) {
+      behindEl.innerText = behindCount;
+      behindEl.style.display = behindCount > 0 ? 'inline-block' : 'none';
+    }
+
+    const totalChanged = (data.staged?.length || 0) + (data.unstaged?.length || 0) + (data.untracked?.length || 0) || (data.changed_files ? data.changed_files.length : 0);
+    const changesCountEl = document.getElementById('ghdChangesCount');
+    if (changesCountEl) changesCountEl.innerText = totalChanged;
 
     const stashes = data.stashes || [];
-    const stashBtn = document.getElementById('ghdStashNavBtn');
-    if (stashBtn) {
-      stashBtn.innerText = `📦 Stashes (${stashes.length})`;
-    }
+    const stashesBadge = document.getElementById('ghdStashesBadgeCount');
+    if (stashesBadge) stashesBadge.innerText = stashes.length;
 
     renderStashBanner(stashes);
 
     allBranches = data.branches || [];
     renderBranchModalList(allBranches, data.branch);
 
-    renderChangesList(data.changed_files || []);
-    renderHistoryList(data.history || []);
+    allHistoryCommits = data.history || [];
+    allGithubIssues = data.issues || [];
+
+    renderChangesList(data);
+    renderHistoryList(allHistoryCommits);
+    renderBranchesTab(allBranches, data.branch);
+    renderIssuesTab(allGithubIssues);
+    renderStashesTab(stashes, data.worktrees || []);
 
   } catch(e) {
     handleServerDisconnected();
+  }
+}
+
+function switchGhdTab(tab) {
+  activeGhdSubTab = tab;
+  if (window.innerWidth <= 768) {
+    toggleGhdMobileView('list');
+  }
+  const tabs = ['changes', 'history', 'branches', 'issues', 'stashes'];
+  tabs.forEach(t => {
+    const btn = document.getElementById(`ghdTab${t.charAt(0).toUpperCase() + t.slice(1)}Btn`);
+    const pane = document.getElementById(`ghd${t.charAt(0).toUpperCase() + t.slice(1)}Tab`);
+    if (btn) btn.className = (t === tab) ? 'ghd-nav-tab active' : 'ghd-nav-tab';
+    if (pane) pane.style.display = (t === tab) ? 'flex' : 'none';
+  });
+
+  if (tab === 'issues' && (!allGithubIssues || allGithubIssues.length === 0)) {
+    loadGithubIssues();
   }
 }
 
@@ -445,61 +1057,136 @@ function renderStashBanner(stashes) {
   banner.style.display = 'flex';
   banner.innerHTML = `
     <div class="stash-banner-title">
-      <span>📦 Stashed changes on <b>${escapeHtml(latest.branch)}</b></span>
+      <span>📦 Stashed changes on <b>${escapeHtml(latest.branch || 'current')}</b></span>
       <span style="font-size:11px; color:var(--text-muted);">${escapeHtml(latest.date || '')}</span>
     </div>
-    <div style="font-family:monospace; font-size:11.5px; color:#cbd5e1; text-overflow:ellipsis; overflow:hidden; white-space:nowrap;">
-      ${escapeHtml(latest.message)}
+    <div style="font-family:var(--font-mono); font-size:11.5px; color:var(--text); text-overflow:ellipsis; overflow:hidden; white-space:nowrap;">
+      ${escapeHtml(latest.message || 'WIP Stash')}
     </div>
     <div style="display:flex; justify-content:flex-end; gap:8px; margin-top:4px;">
-      <button class="action-btn" onclick="popStash(0)" style="background:#1d4ed8; color:#ffffff; border:none; padding:3px 10px; font-size:11.5px;">
+      <button class="action-btn action-btn--primary action-btn--sm" onclick="popStash(0)">
         ↩️ Restore
       </button>
-      <button class="action-btn danger" onclick="dropStash(0)" style="padding:3px 8px; font-size:11.5px;">
+      <button class="action-btn danger action-btn--sm" onclick="dropStash(0)">
         🗑️ Discard
       </button>
-      <button class="action-btn" onclick="openStashesModal()" style="padding:3px 8px; font-size:11.5px;">
+      <button class="action-btn action-btn--sm" onclick="switchGhdTab('stashes')">
         View All (${stashes.length})
       </button>
     </div>
   `;
 }
 
-function renderChangesList(files) {
-  const container = document.getElementById('ghdChangesList');
-  container.innerHTML = '';
+function renderChangesList(data) {
+  const staged = data.staged || [];
+  const unstaged = data.unstaged || [];
+  const untracked = data.untracked || [];
   
-  if (files.length === 0) {
-    container.innerHTML = '<div style="color:var(--green); text-align:center; padding:30px; font-weight:700;">✓ No local changes<br><span style="font-size:12px; color:var(--text-muted); font-weight:400;">Working tree is completely clean.</span></div>';
+  const stagedSec = document.getElementById('ghdStagedSection');
+  const stagedList = document.getElementById('ghdStagedItems');
+  const stagedCountEl = document.getElementById('ghdStagedCount');
+  
+  const unstagedSec = document.getElementById('ghdUnstagedSection');
+  const unstagedList = document.getElementById('ghdUnstagedItems');
+  const unstagedCountEl = document.getElementById('ghdUnstagedCount');
+  
+  const untrackedSec = document.getElementById('ghdUntrackedSection');
+  const untrackedList = document.getElementById('ghdUntrackedItems');
+  const untrackedCountEl = document.getElementById('ghdUntrackedCount');
+  
+  const noChangesMsg = document.getElementById('ghdNoChangesMsg');
+
+  if (stagedCountEl) stagedCountEl.innerText = staged.length;
+  if (unstagedCountEl) unstagedCountEl.innerText = unstaged.length;
+  if (untrackedCountEl) untrackedCountEl.innerText = untracked.length;
+
+  const totalCount = staged.length + unstaged.length + untracked.length;
+
+  if (totalCount === 0) {
+    if (stagedSec) stagedSec.style.display = 'none';
+    if (unstagedSec) unstagedSec.style.display = 'none';
+    if (untrackedSec) untrackedSec.style.display = 'none';
+    if (noChangesMsg) noChangesMsg.style.display = 'block';
+    
     document.getElementById('ghdDiffTitle').innerText = "Working tree clean";
-    document.getElementById('ghdDiffContent').innerHTML = '<div style="color:var(--text-muted); padding:20px;">No uncommitted changes in working directory.</div>';
+    document.getElementById('ghdDiffContent').innerHTML = '<div style="color:var(--text-muted); padding:30px; text-align:center;">✨ Working tree is completely clean. No modified files.</div>';
     document.getElementById('ghdDiscardFileBtn').style.display = 'none';
+    document.getElementById('ghdToggleStageFileBtn').style.display = 'none';
+    document.getElementById('ghdSendToLoopBtn').style.display = 'none';
+    document.getElementById('ghdDiffStats').style.display = 'none';
     updateCommitBtnState();
     return;
   }
 
-  checkedFiles.clear();
-  files.forEach(f => checkedFiles.add(f.path));
-  updateSelectedCount();
+  if (noChangesMsg) noChangesMsg.style.display = 'none';
 
-  files.forEach((f) => {
-    const row = document.createElement('div');
-    row.className = `ghd-file-row ${f.path === selectedGhdFile ? 'selected' : ''}`;
-    row.onclick = () => selectFileForDiff(f.path, f.staged);
+  // Render Staged Section
+  if (stagedSec && stagedList) {
+    stagedSec.style.display = staged.length > 0 ? 'flex' : 'none';
+    stagedList.innerHTML = '';
+    staged.forEach(f => {
+      stagedList.appendChild(createFileRowElement(f, true));
+    });
+  }
 
-    const statusClass = `status-${f.status.toLowerCase()}`;
-    row.innerHTML = `
-      <div style="display:flex; align-items:center; gap:8px; overflow:hidden;">
-        <input type="checkbox" ${checkedFiles.has(f.path) ? 'checked' : ''} onclick="event.stopPropagation(); toggleFileCheck('${escapeJs(f.path)}', this.checked)">
-        <span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${escapeHtml(f.path)}</span>
+  // Render Unstaged Section
+  if (unstagedSec && unstagedList) {
+    unstagedSec.style.display = unstaged.length > 0 ? 'flex' : 'none';
+    unstagedList.innerHTML = '';
+    unstaged.forEach(f => {
+      unstagedList.appendChild(createFileRowElement(f, false));
+    });
+  }
+
+  // Render Untracked Section
+  if (untrackedSec && untrackedList) {
+    untrackedSec.style.display = untracked.length > 0 ? 'flex' : 'none';
+    untrackedList.innerHTML = '';
+    untracked.forEach(f => {
+      untrackedList.appendChild(createFileRowElement(f, false));
+    });
+  }
+
+  const allList = [...staged, ...unstaged, ...untracked];
+  if (!selectedGhdFile || !allList.find(f => f.path === selectedGhdFile)) {
+    const first = allList[0];
+    if (first) selectFileForDiff(first.path, first.staged || false);
+  }
+}
+
+function createFileRowElement(f, isStaged) {
+  const row = document.createElement('div');
+  row.className = `ghd-file-row ${f.path === selectedGhdFile ? 'selected' : ''}`;
+  row.setAttribute('data-context', 'file');
+  row.setAttribute('data-path', f.path);
+  row.setAttribute('data-staged', isStaged ? 'true' : 'false');
+  row.setAttribute('data-status', f.status);
+  row.onclick = () => selectFileForDiff(f.path, isStaged);
+
+  const statusClass = `status-${(f.status || 'm').toLowerCase()}`;
+  row.innerHTML = `
+    <div style="display:flex; align-items:center; gap:8px; overflow:hidden; flex:1;">
+      <input type="checkbox" ${checkedFiles.has(f.path) ? 'checked' : ''} onclick="event.stopPropagation(); toggleFileCheck('${escapeJs(f.path)}', this.checked)">
+      <span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${escapeHtml(f.path)}">${escapeHtml(f.path)}</span>
+    </div>
+    <div style="display:flex; align-items:center; gap:6px;">
+      <div class="ghd-file-actions" onclick="event.stopPropagation()">
+        ${isStaged ? 
+          `<button class="ghd-mini-btn" onclick="unstageFile('${escapeJs(f.path)}')" title="Unstage file">↩️</button>` : 
+          `<button class="ghd-mini-btn" onclick="stageFile('${escapeJs(f.path)}')" title="Stage file">📝</button>`
+        }
+        <button class="ghd-mini-btn ghd-mini-btn--danger" onclick="discardFileConfirm('${escapeJs(f.path)}')" title="Discard changes">🗑️</button>
       </div>
-      <span class="file-status-badge ${statusClass}">${escapeHtml(f.status)}</span>
-    `;
-    container.appendChild(row);
-  });
+      <span class="file-status-badge ${statusClass}">${escapeHtml(f.status || 'M')}</span>
+    </div>
+  `;
+  return row;
+}
 
-  if (!selectedGhdFile || !files.find(f => f.path === selectedGhdFile)) {
-    selectFileForDiff(files[0].path, files[0].staged);
+function toggleSectionCollapse(containerId) {
+  const el = document.getElementById(containerId);
+  if (el) {
+    el.style.display = el.style.display === 'none' ? 'flex' : 'none';
   }
 }
 
@@ -510,10 +1197,10 @@ function toggleFileCheck(path, isChecked) {
 }
 
 function toggleSelectAllFiles(isChecked) {
-  if (!currentGhdState || !currentGhdState.changed_files) return;
   checkedFiles.clear();
-  if (isChecked) {
-    currentGhdState.changed_files.forEach(f => checkedFiles.add(f.path));
+  if (isChecked && currentGhdState) {
+    const allFiles = [...(currentGhdState.staged || []), ...(currentGhdState.unstaged || []), ...(currentGhdState.untracked || [])];
+    allFiles.forEach(f => checkedFiles.add(f.path));
   }
   const checkboxes = document.querySelectorAll('#ghdChangesList input[type="checkbox"]');
   checkboxes.forEach(cb => cb.checked = isChecked);
@@ -521,35 +1208,209 @@ function toggleSelectAllFiles(isChecked) {
 }
 
 function updateSelectedCount() {
-  const el = document.getElementById('ghdSelectedCount');
-  if (el) el.innerText = `${checkedFiles.size} files selected`;
   updateCommitBtnState();
 }
 
 function updateCommitBtnState() {
   const summary = document.getElementById('commitSummaryInput').value.trim();
   const btn = document.getElementById('commitActionBtn');
-  btn.disabled = (checkedFiles.size === 0 || !summary);
+  const hasStaged = (currentGhdState && currentGhdState.staged && currentGhdState.staged.length > 0);
+  const hasChecked = checkedFiles.size > 0;
+  
+  if (btn) {
+    btn.disabled = (!hasStaged && !hasChecked) || !summary;
+    if (hasStaged) {
+      btn.innerText = `✓ Commit ${currentGhdState.staged.length} staged file(s) to ${currentGhdState.branch || 'main'}`;
+    } else if (hasChecked) {
+      btn.innerText = `✓ Stage & Commit ${checkedFiles.size} selected file(s) to ${currentGhdState ? currentGhdState.branch : 'main'}`;
+    } else {
+      btn.innerText = `✓ Commit to ${currentGhdState ? currentGhdState.branch : 'main'}`;
+    }
+  }
+}
+
+async function stageFile(path) {
+  try {
+    const res = await fetch('/api/git/stage', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ repo_path: currentRepoPath, files: [path] })
+    });
+    const data = await res.json();
+    if (data.success) {
+      showToast(`📝 Staged ${path}`, "info", 1800);
+      await loadGitHubDesktopState();
+    } else {
+      showToast(`Stage failed: ${data.error || data.stderr}`, "error");
+    }
+  } catch(e) { showToast(`Error: ${e.message}`, "error"); }
+}
+
+async function unstageFile(path) {
+  try {
+    const res = await fetch('/api/git/unstage', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ repo_path: currentRepoPath, files: [path] })
+    });
+    const data = await res.json();
+    if (data.success) {
+      showToast(`↩️ Unstaged ${path}`, "info", 1800);
+      await loadGitHubDesktopState();
+    } else {
+      showToast(`Unstage failed: ${data.error || data.stderr}`, "error");
+    }
+  } catch(e) { showToast(`Error: ${e.message}`, "error"); }
+}
+
+async function stageAllChanges() {
+  try {
+    const allFiles = [...(currentGhdState?.unstaged || []), ...(currentGhdState?.untracked || [])].map(f => f.path);
+    if (allFiles.length === 0) {
+      showToast("No unstaged files to stage", "info");
+      return;
+    }
+    const res = await fetch('/api/git/stage', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ repo_path: currentRepoPath, files: allFiles })
+    });
+    const data = await res.json();
+    if (data.success) {
+      showToast(`✓ Staged all ${allFiles.length} file(s)`, "success");
+      await loadGitHubDesktopState();
+    }
+  } catch(e) { showToast(`Error: ${e.message}`, "error"); }
+}
+
+async function unstageAllChanges() {
+  try {
+    const stagedFiles = (currentGhdState?.staged || []).map(f => f.path);
+    if (stagedFiles.length === 0) {
+      showToast("No staged files to unstage", "info");
+      return;
+    }
+    const res = await fetch('/api/git/unstage', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ repo_path: currentRepoPath, files: stagedFiles })
+    });
+    const data = await res.json();
+    if (data.success) {
+      showToast(`✓ Unstaged all ${stagedFiles.length} file(s)`, "info");
+      await loadGitHubDesktopState();
+    }
+  } catch(e) { showToast(`Error: ${e.message}`, "error"); }
+}
+
+function discardFileConfirm(path) {
+  openGhdConfirmModal(
+    "⚠️ Discard File Changes",
+    `Are you sure you want to discard all local changes to <b>${escapeHtml(path)}</b>? This cannot be undone.`,
+    "Discard Changes",
+    async () => {
+      await executeDiscardFiles([path]);
+    }
+  );
+}
+
+function discardAllChangesConfirm() {
+  const allFiles = [...(currentGhdState?.staged || []), ...(currentGhdState?.unstaged || []), ...(currentGhdState?.untracked || [])].map(f => f.path);
+  if (allFiles.length === 0) return;
+  openGhdConfirmModal(
+    "⚠️ Discard ALL Local Changes",
+    `Are you sure you want to discard all changes across <b>${allFiles.length} file(s)</b>? All unstaged edits and untracked files will be permanently deleted.`,
+    "Discard All Changes",
+    async () => {
+      await executeDiscardFiles(allFiles);
+    }
+  );
+}
+
+async function executeDiscardFiles(files) {
+  try {
+    const res = await fetch('/api/git/discard', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ repo_path: currentRepoPath, files: files })
+    });
+    const data = await res.json();
+    if (data.success) {
+      showToast(`✓ Discarded changes to ${files.length} file(s)`, "info");
+      selectedGhdFile = "";
+      await loadGitHubDesktopState();
+    } else {
+      showToast("Discard error: " + (data.stderr || data.error), "error", 4500);
+    }
+  } catch(e) { showToast("Error: " + e.message, "error"); }
+}
+
+async function discardSelectedFile() {
+  if (selectedGhdFile) {
+    discardFileConfirm(selectedGhdFile);
+  }
+}
+
+async function toggleStageSelectedFile() {
+  if (!selectedGhdFile) return;
+  const isStaged = (currentGhdState?.staged || []).some(f => f.path === selectedGhdFile);
+  if (isStaged) {
+    await unstageFile(selectedGhdFile);
+  } else {
+    await stageFile(selectedGhdFile);
+  }
+}
+
+function sendSelectedFileToLoop() {
+  if (!selectedGhdFile) return;
+  const goalText = `Review, fix, and verify changes in file: ${selectedGhdFile}\n\nContext Diff:\n\`\`\`diff\n${currentRawDiff.slice(0, 1500)}\n\`\`\``;
+  setLoopGoalPrompt(goalText);
+  switchTab(2); // Switch to Auto-Dev Loop tab
+  showToast(`🤖 Loaded '${selectedGhdFile}' into Auto-Dev Loop goal!`, "success");
+}
+
+function setDiffViewMode(mode) {
+  diffViewMode = mode;
+  const uBtn = document.getElementById('diffModeUnifiedBtn');
+  const sBtn = document.getElementById('diffModeSplitBtn');
+  if (uBtn) uBtn.className = mode === 'unified' ? 'diff-mode-btn active' : 'diff-mode-btn';
+  if (sBtn) sBtn.className = mode === 'split' ? 'diff-mode-btn active' : 'diff-mode-btn';
+  renderColoredDiff(currentRawDiff);
 }
 
 async function selectFileForDiff(filePath, isStaged) {
   selectedGhdFile = filePath;
+  selectedGhdCommit = "";
   
+  if (window.innerWidth <= 768) {
+    toggleGhdMobileView('diff');
+  }
+
   const rows = document.querySelectorAll('.ghd-file-row');
   rows.forEach(r => {
-    if (r.innerText.includes(filePath)) r.className = 'ghd-file-row selected';
+    if (r.getAttribute('data-path') === filePath) r.className = 'ghd-file-row selected';
     else r.className = 'ghd-file-row';
   });
 
   document.getElementById('ghdDiffTitle').innerText = `📄 ${filePath}`;
+  
   const discardBtn = document.getElementById('ghdDiscardFileBtn');
-  discardBtn.style.display = 'inline-block';
-  discardBtn.innerText = `🗑️ Discard Changes`;
+  if (discardBtn) discardBtn.style.display = 'inline-block';
+  
+  const stageBtn = document.getElementById('ghdToggleStageFileBtn');
+  if (stageBtn) {
+    stageBtn.style.display = 'inline-block';
+    stageBtn.innerText = isStaged ? '↩️ Unstage' : '📝 Stage';
+  }
+  
+  const loopBtn = document.getElementById('ghdSendToLoopBtn');
+  if (loopBtn) loopBtn.style.display = 'inline-block';
 
   try {
     const res = await fetch(`/api/git/diff?repo_path=${encodeURIComponent(currentRepoPath)}&file=${encodeURIComponent(filePath)}&staged=${isStaged ? 'true' : 'false'}`);
     const data = await res.json();
-    renderColoredDiff(data.diff || "No diff available.");
+    currentRawDiff = data.diff || "No diff available.";
+    renderColoredDiff(currentRawDiff);
   } catch(e) { handleServerDisconnected(); }
 }
 
@@ -557,7 +1418,35 @@ function renderColoredDiff(rawDiff) {
   const container = document.getElementById('ghdDiffContent');
   container.innerHTML = '';
   
+  if (!rawDiff || rawDiff.trim() === '' || rawDiff === "No diff available.") {
+    container.innerHTML = '<div style="color:var(--text-muted); padding:30px; text-align:center;">No changes recorded in diff for this selection.</div>';
+    document.getElementById('ghdDiffStats').style.display = 'none';
+    return;
+  }
+
   const lines = rawDiff.split("\n");
+  let additions = 0;
+  let deletions = 0;
+
+  lines.forEach(line => {
+    if (line.startsWith('+') && !line.startsWith('+++')) additions++;
+    else if (line.startsWith('-') && !line.startsWith('---')) deletions++;
+  });
+
+  const statsEl = document.getElementById('ghdDiffStats');
+  if (statsEl) {
+    statsEl.style.display = 'inline-block';
+    statsEl.innerHTML = `<span style="color:var(--green);">+${additions}</span> <span style="color:var(--rose);">-${deletions}</span>`;
+  }
+
+  if (diffViewMode === 'split') {
+    renderSplitDiff(lines, container);
+  } else {
+    renderUnifiedDiff(lines, container);
+  }
+}
+
+function renderUnifiedDiff(lines, container) {
   lines.forEach(line => {
     const div = document.createElement('div');
     div.className = 'diff-line';
@@ -577,23 +1466,64 @@ function renderColoredDiff(rawDiff) {
   });
 }
 
-async function discardSelectedFile() {
-  if (!selectedGhdFile) return;
-  try {
-    const res = await fetch('/api/git/discard', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ repo_path: currentRepoPath, file: selectedGhdFile })
-    });
-    const data = await res.json();
-    if (data.success) {
-      showToast(`✓ Discarded changes to ${selectedGhdFile}`, "info");
-      selectedGhdFile = "";
-      await loadGitHubDesktopState();
+function renderSplitDiff(lines, container) {
+  const wrapper = document.createElement('div');
+  wrapper.className = 'split-diff-wrapper';
+
+  const leftPane = document.createElement('div');
+  leftPane.className = 'split-pane';
+  const rightPane = document.createElement('div');
+  rightPane.className = 'split-pane';
+
+  const leftTable = document.createElement('table');
+  leftTable.className = 'split-table';
+  const rightTable = document.createElement('table');
+  rightTable.className = 'split-table';
+
+  let oldLineNum = 0;
+  let newLineNum = 0;
+
+  lines.forEach(line => {
+    const lTr = document.createElement('tr');
+    const rTr = document.createElement('tr');
+
+    if (line.startsWith('@@')) {
+      const match = line.match(/@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
+      if (match) {
+        oldLineNum = parseInt(match[1], 10);
+        newLineNum = parseInt(match[2], 10);
+      }
+      lTr.className = 'split-line-chunk';
+      rTr.className = 'split-line-chunk';
+      lTr.innerHTML = `<td class="split-line-num">...</td><td>${escapeHtml(line)}</td>`;
+      rTr.innerHTML = `<td class="split-line-num">...</td><td>${escapeHtml(line)}</td>`;
+    } else if (line.startsWith('-') && !line.startsWith('---')) {
+      lTr.className = 'split-line-del';
+      lTr.innerHTML = `<td class="split-line-num">${oldLineNum++}</td><td>${escapeHtml(line)}</td>`;
+      rTr.className = 'split-line-empty';
+      rTr.innerHTML = `<td class="split-line-num"></td><td></td>`;
+    } else if (line.startsWith('+') && !line.startsWith('+++')) {
+      lTr.className = 'split-line-empty';
+      lTr.innerHTML = `<td class="split-line-num"></td><td></td>`;
+      rTr.className = 'split-line-add';
+      rTr.innerHTML = `<td class="split-line-num">${newLineNum++}</td><td>${escapeHtml(line)}</td>`;
+    } else if (!line.startsWith('---') && !line.startsWith('+++') && !line.startsWith('diff --git')) {
+      lTr.innerHTML = `<td class="split-line-num">${oldLineNum++}</td><td>${escapeHtml(line)}</td>`;
+      rTr.innerHTML = `<td class="split-line-num">${newLineNum++}</td><td>${escapeHtml(line)}</td>`;
     } else {
-      showToast("Discard error: " + (data.stderr || data.error), "error", 4500);
+      lTr.innerHTML = `<td class="split-line-num"></td><td>${escapeHtml(line)}</td>`;
+      rTr.innerHTML = `<td class="split-line-num"></td><td>${escapeHtml(line)}</td>`;
     }
-  } catch(e) { showToast("Error: " + e.message, "error"); }
+
+    leftTable.appendChild(lTr);
+    rightTable.appendChild(rTr);
+  });
+
+  leftPane.appendChild(leftTable);
+  rightPane.appendChild(rightTable);
+  wrapper.appendChild(leftPane);
+  wrapper.appendChild(rightPane);
+  container.appendChild(wrapper);
 }
 
 async function ghdCommit() {
@@ -601,20 +1531,25 @@ async function ghdCommit() {
   const desc = document.getElementById('commitDescInput').value.trim();
   if (!summary) return;
 
-  const fullMessage = desc ? `${summary}\n\n${desc}` : summary;
   const fileList = Array.from(checkedFiles);
 
   try {
     const res = await fetch('/api/git/commit', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ repo_path: currentRepoPath, message: fullMessage, files: fileList })
+      body: JSON.stringify({
+        repo_path: currentRepoPath,
+        summary: summary,
+        description: desc,
+        files: fileList
+      })
     });
     const data = await res.json();
-    if (data.success) {
-      showToast("✓ Committed changes successfully!", "success");
+    if (data.success && data.committed) {
+      showToast(`✓ Committed: ${data.short_hash} - ${summary}`, "success");
       document.getElementById('commitSummaryInput').value = '';
       document.getElementById('commitDescInput').value = '';
+      checkedFiles.clear();
       selectedGhdFile = "";
       await loadGitHubDesktopState();
     } else {
@@ -626,7 +1561,7 @@ async function ghdCommit() {
 async function ghdPush() {
   try {
     const btn = document.getElementById('ghdPushBtn');
-    btn.innerText = "Pushing...";
+    if (btn) btn.innerText = "Pushing...";
     const res = await fetch('/api/git/push', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -634,7 +1569,6 @@ async function ghdPush() {
     });
     const data = await res.json();
     await loadGitHubDesktopState();
-    btn.innerText = `⬆️ Push ${currentGhdState ? currentGhdState.ahead : 0}`;
     if (data.success) showToast("✓ Pushed to remote repository!", "success");
     else showToast("Push failed: " + (data.stderr || data.stdout || data.error), "error", 4500);
   } catch(e) { showToast("Push error: " + e.message, "error"); }
@@ -645,7 +1579,7 @@ async function ghdPull() {
     const res = await fetch('/api/git/pull', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ repo_path: currentRepoPath })
+      body: JSON.stringify({ repo_path: currentRepoPath, rebase: false })
     });
     const data = await res.json();
     await loadGitHubDesktopState();
@@ -666,61 +1600,161 @@ async function ghdFetch() {
   } catch(e) { showToast("Fetch error: " + e.message, "error"); }
 }
 
+// ─────────────────────────────────────────────────────────────
+// HISTORY TAB
+// ─────────────────────────────────────────────────────────────
 function renderHistoryList(commits) {
   const container = document.getElementById('ghdHistoryList');
+  if (!container) return;
   container.innerHTML = '';
 
-  if (commits.length === 0) {
-    container.innerHTML = '<div style="color:var(--text-muted); text-align:center; padding:20px;">No commits found.</div>';
+  if (!commits || commits.length === 0) {
+    container.innerHTML = '<div style="color:var(--text-muted); text-align:center; padding:30px;">No commits found in history.</div>';
     return;
   }
 
   commits.forEach(c => {
     const div = document.createElement('div');
     div.className = `ghd-commit-item ${c.hash === selectedGhdCommit ? 'selected' : ''}`;
+    div.setAttribute('data-context', 'commit');
+    div.setAttribute('data-sha', c.hash);
+    div.setAttribute('data-short-sha', c.short_hash);
+    div.setAttribute('data-subject', c.subject);
     div.onclick = () => selectCommitForInspection(c);
     div.innerHTML = `
       <div class="ghd-commit-msg">${escapeHtml(c.subject)}</div>
       <div class="ghd-commit-meta">
         <span>👤 ${escapeHtml(c.author)}</span>
         <span>🕒 ${escapeHtml(c.date)}</span>
-        <span style="color:var(--accent);">${escapeHtml(c.short_hash)}</span>
+        <span style="color:var(--accent); font-weight:700;">${escapeHtml(c.short_hash)}</span>
       </div>
     `;
     container.appendChild(div);
   });
 }
 
+function filterHistoryList(val) {
+  const query = val.toLowerCase();
+  const filtered = allHistoryCommits.filter(c => 
+    c.subject.toLowerCase().includes(query) ||
+    c.author.toLowerCase().includes(query) ||
+    c.hash.toLowerCase().includes(query) ||
+    c.short_hash.toLowerCase().includes(query)
+  );
+  renderHistoryList(filtered);
+}
+
 async function selectCommitForInspection(commit) {
   selectedGhdCommit = commit.hash;
+  selectedGhdFile = "";
   
+  if (window.innerWidth <= 768) {
+    toggleGhdMobileView('diff');
+  }
+
   const items = document.querySelectorAll('.ghd-commit-item');
   items.forEach(i => {
-    if (i.innerHTML.includes(commit.short_hash)) i.className = 'ghd-commit-item selected';
+    if (i.getAttribute('data-sha') === commit.hash) i.className = 'ghd-commit-item selected';
     else i.className = 'ghd-commit-item';
   });
 
-  document.getElementById('ghdDiffTitle').innerText = `📜 Commit: ${commit.subject} (${commit.short_hash})`;
+  document.getElementById('ghdDiffTitle').innerText = `📜 ${commit.subject} (${commit.short_hash})`;
   document.getElementById('ghdDiscardFileBtn').style.display = 'none';
+  document.getElementById('ghdToggleStageFileBtn').style.display = 'none';
+  document.getElementById('ghdSendToLoopBtn').style.display = 'none';
 
   try {
     const res = await fetch(`/api/git/commit_detail?repo_path=${encodeURIComponent(currentRepoPath)}&hash=${encodeURIComponent(commit.hash)}`);
     const data = await res.json();
-    renderColoredDiff(data.diff || "No diff recorded for this commit.");
+    currentRawDiff = data.diff || "No diff recorded for this commit.";
+    renderColoredDiff(currentRawDiff);
   } catch(e) {}
 }
 
-function switchGhdTab(tab) {
-  document.getElementById('ghdTabChangesBtn').className = (tab === 'changes') ? 'ghd-nav-tab active' : 'ghd-nav-tab';
-  document.getElementById('ghdTabHistoryBtn').className = (tab === 'history') ? 'ghd-nav-tab active' : 'ghd-nav-tab';
+// ─────────────────────────────────────────────────────────────
+// BRANCHES TAB
+// ─────────────────────────────────────────────────────────────
+function renderBranchesTab(branches, currentBranch) {
+  const container = document.getElementById('ghdBranchesList');
+  if (!container) return;
+  container.innerHTML = '';
 
-  document.getElementById('ghdChangesTab').style.display = (tab === 'changes') ? 'flex' : 'none';
-  document.getElementById('ghdHistoryTab').style.display = (tab === 'history') ? 'flex' : 'none';
+  if (!branches || branches.length === 0) {
+    container.innerHTML = '<div style="color:var(--text-muted); text-align:center; padding:30px;">No branches found.</div>';
+    return;
+  }
+
+  const localBranches = branches.filter(b => !(typeof b === 'object' && b.remote));
+  const remoteBranches = branches.filter(b => (typeof b === 'object' && b.remote));
+
+  const localHeader = document.createElement('div');
+  localHeader.className = 'ghd-section-header';
+  localHeader.innerHTML = `<span>Local Branches (${localBranches.length})</span>`;
+  container.appendChild(localHeader);
+
+  localBranches.forEach(b => {
+    const bName = typeof b === 'string' ? b : b.name;
+    const isCurrent = (bName === currentBranch);
+    const card = document.createElement('div');
+    card.className = `ghd-card-item ${isCurrent ? 'active' : ''}`;
+    card.setAttribute('data-context', 'branch');
+    card.setAttribute('data-branch', bName);
+    card.innerHTML = `
+      <div style="display:flex; justify-content:space-between; align-items:center;">
+        <span style="font-weight:700; color:#fff; font-family:var(--font-mono);">🌿 ${escapeHtml(bName)}</span>
+        ${isCurrent ? '<span class="file-status-badge status-a">CURRENT</span>' : `
+          <div style="display:flex; gap:4px;">
+            <button class="ghd-mini-btn" onclick="ghdCheckoutBranch('${escapeJs(bName)}', false)" title="Checkout Branch">Switch</button>
+            <button class="ghd-mini-btn" onclick="ghdMergeBranchConfirm('${escapeJs(bName)}')" title="Merge into current">Merge</button>
+            <button class="ghd-mini-btn ghd-mini-btn--danger" onclick="ghdDeleteBranchConfirm('${escapeJs(bName)}')" title="Delete branch">🗑️</button>
+          </div>
+        `}
+      </div>
+      ${typeof b === 'object' && b.subject ? `
+        <div style="font-size:11.5px; color:var(--text-muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">
+          ${escapeHtml(b.subject)} (${escapeHtml(b.short_hash || '')})
+        </div>
+      ` : ''}
+    `;
+    container.appendChild(card);
+  });
+
+  if (remoteBranches.length > 0) {
+    const remoteHeader = document.createElement('div');
+    remoteHeader.className = 'ghd-section-header';
+    remoteHeader.style.marginTop = '10px';
+    remoteHeader.innerHTML = `<span>Remote Branches (${remoteBranches.length})</span>`;
+    container.appendChild(remoteHeader);
+
+    remoteBranches.forEach(b => {
+      const bName = typeof b === 'string' ? b : b.name;
+      const card = document.createElement('div');
+      card.className = 'ghd-card-item';
+      card.setAttribute('data-context', 'branch');
+      card.setAttribute('data-branch', bName);
+      card.innerHTML = `
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+          <span style="font-weight:700; color:var(--text-muted); font-family:var(--font-mono);">🌐 ${escapeHtml(bName)}</span>
+          <button class="ghd-mini-btn" onclick="ghdCheckoutBranch('${escapeJs(bName)}', false)">Checkout</button>
+        </div>
+      `;
+      container.appendChild(card);
+    });
+  }
+}
+
+function filterBranchesTabList(val) {
+  const query = val.toLowerCase();
+  const filtered = allBranches.filter(b => {
+    const name = typeof b === 'string' ? b : b.name;
+    return name.toLowerCase().includes(query);
+  });
+  renderBranchesTab(filtered, currentGhdState ? currentGhdState.branch : "");
 }
 
 function toggleBranchModal() {
   const m = document.getElementById('branchModal');
-  m.className = (m.className.includes('active')) ? 'branch-modal' : 'branch-modal active';
+  if (m) m.className = (m.className.includes('active')) ? 'branch-modal' : 'branch-modal active';
 }
 
 document.addEventListener('click', (e) => {
@@ -733,6 +1767,7 @@ document.addEventListener('click', (e) => {
 
 function renderBranchModalList(branches, currentBranch) {
   const scroll = document.getElementById('branchListScroll');
+  if (!scroll) return;
   scroll.innerHTML = '';
   
   branches.forEach(b => {
@@ -740,8 +1775,10 @@ function renderBranchModalList(branches, currentBranch) {
     const isCurrent = (bName === currentBranch);
     const row = document.createElement('div');
     row.className = `branch-item-row ${isCurrent ? 'current' : ''}`;
+    row.setAttribute('data-context', 'branch');
+    row.setAttribute('data-branch', bName);
     row.onclick = () => ghdCheckoutBranch(bName, false);
-    row.innerHTML = `<span>🌿 ${escapeHtml(bName)}</span> ${isCurrent ? '<span style="color:var(--green); font-weight:800;">✓ Current</span>' : ''}`;
+    row.innerHTML = `<span>🌿 ${escapeHtml(bName)}</span> ${isCurrent ? '<span style="color:var(--green); font-weight:700;">✓ Current</span>' : ''}`;
     scroll.appendChild(row);
   });
 }
@@ -755,95 +1792,327 @@ function filterBranches(val) {
   renderBranchModalList(filtered, currentGhdState ? currentGhdState.branch : "");
 }
 
-// ─────────────────────────────────────────────────────────────
-// BRANCH SWITCHING & STASH INTERACTION (GITHUB DESKTOP STYLE)
-// ─────────────────────────────────────────────────────────────
-async function ghdCheckoutBranch(branchName, create) {
-  document.getElementById('branchModal').className = 'branch-modal';
+async function ghdCheckoutBranch(branchName, create = false, startPoint = "") {
+  const m = document.getElementById('branchModal');
+  if (m) m.className = 'branch-modal';
 
   const cleanName = branchName.trim().replace(/^origin\//, '').replace(/^remotes\/origin\//, '');
   if (currentGhdState && currentGhdState.branch === cleanName && !create) {
     return;
   }
 
-  // If local uncommitted changes exist, open the Stash & Switch dialog
-  if (currentGhdState && currentGhdState.changed_files && currentGhdState.changed_files.length > 0) {
-    pendingBranchSwitch = { branch: cleanName, create: create };
-    openBranchSwitchPrompt(cleanName, currentGhdState.changed_files.length);
-    return;
-  }
-
-  await executeDirectBranchCheckout(cleanName, create);
-}
-
-function openBranchSwitchPrompt(targetBranch, changeCount) {
-  document.getElementById('switchTargetBranchName').innerText = targetBranch;
-  document.getElementById('switchChangeCount').innerText = changeCount;
-  document.getElementById('branchSwitchModal').className = 'modal-overlay active';
-}
-
-function closeBranchSwitchModal() {
-  document.getElementById('branchSwitchModal').className = 'modal-overlay';
-  pendingBranchSwitch = null;
-}
-
-async function confirmStashAndSwitch() {
-  if (!pendingBranchSwitch) return;
-  const { branch, create } = pendingBranchSwitch;
-  closeBranchSwitchModal();
-
   try {
-    const res = await fetch('/api/git/stash_and_switch', {
+    const res = await fetch('/api/git/branch/checkout', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ repo_path: currentRepoPath, branch: branch, create: create })
-    });
-    const data = await res.json();
-    await loadGitHubDesktopState();
-    if (data.success) {
-      showToast(`✓ Changes stashed! Switched to '${branch}'`, "success");
-    } else {
-      showToast("Stash & Switch failed: " + (data.error || data.stderr), "error", 4500);
-    }
-  } catch(e) { showToast("Error: " + e.message, "error"); }
-}
-
-async function confirmBringChanges() {
-  if (!pendingBranchSwitch) return;
-  const { branch, create } = pendingBranchSwitch;
-  closeBranchSwitchModal();
-  await executeDirectBranchCheckout(branch, create);
-}
-
-async function executeDirectBranchCheckout(branchName, create) {
-  try {
-    const res = await fetch('/api/git/branch', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ repo_path: currentRepoPath, branch: branchName, create: create })
+      body: JSON.stringify({
+        repo_path: currentRepoPath,
+        branch: cleanName,
+        create: create,
+        start_point: startPoint
+      })
     });
     const data = await res.json();
     if (data.success) {
-      showToast(`✓ Switched to branch '${branchName}'`, "success");
+      showToast(`✓ Switched to branch '${cleanName}'`, "success");
       await loadGitHubDesktopState();
     } else {
-      showToast("Branch switch failed: " + (data.stderr || data.error), "error", 4500);
+      showToast(`Branch switch error: ${data.stderr || data.error}`, "error", 4500);
     }
-  } catch(e) { showToast("Error: " + e.message, "error"); }
+  } catch(e) { showToast(`Error: ${e.message}`, "error"); }
 }
 
-async function createAndCheckoutBranch() {
-  const input = document.getElementById('branchSearchInput').value.trim();
-  if (!input) {
-    showToast("Type a branch name in the search box first.", "warn");
+function ghdMergeBranchConfirm(sourceBranch) {
+  openGhdConfirmModal(
+    "🔀 Merge Branch",
+    `Merge branch <b>${escapeHtml(sourceBranch)}</b> into <b>${escapeHtml(currentGhdState?.branch || 'main')}</b>?`,
+    "Merge Branch",
+    async () => {
+      try {
+        const res = await fetch('/api/git/branch/merge', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ repo_path: currentRepoPath, source_branch: sourceBranch })
+        });
+        const data = await res.json();
+        if (data.success && data.merged) {
+          showToast(`✓ Merged '${sourceBranch}' into '${currentGhdState?.branch}'`, "success");
+          await loadGitHubDesktopState();
+        } else {
+          showToast(`Merge failed: ${data.stderr || data.error}`, "error", 4500);
+        }
+      } catch(e) { showToast(`Error: ${e.message}`, "error"); }
+    }
+  );
+}
+
+function ghdDeleteBranchConfirm(branchName) {
+  openGhdConfirmModal(
+    "🗑️ Delete Branch",
+    `Are you sure you want to delete branch <b>${escapeHtml(branchName)}</b>?`,
+    "Delete Branch",
+    async () => {
+      try {
+        const res = await fetch('/api/git/branch/delete', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ repo_path: currentRepoPath, branch: branchName, force: true })
+        });
+        const data = await res.json();
+        if (data.success) {
+          showToast(`✓ Deleted branch '${branchName}'`, "info");
+          await loadGitHubDesktopState();
+        } else {
+          showToast(`Delete failed: ${data.stderr || data.error}`, "error", 4500);
+        }
+      } catch(e) { showToast(`Error: ${e.message}`, "error"); }
+    }
+  );
+}
+
+function openNewBranchDialog(startPoint = "") {
+  const modal = document.getElementById('ghdNewBranchModal');
+  if (modal) {
+    modal.style.display = 'flex';
+    document.getElementById('newBranchNameInput').value = '';
+    document.getElementById('newBranchStartPointInput').value = startPoint || (currentGhdState ? currentGhdState.branch : 'main');
+    document.getElementById('newBranchNameInput').focus();
+  }
+}
+
+function closeGhdNewBranchModal() {
+  const modal = document.getElementById('ghdNewBranchModal');
+  if (modal) modal.style.display = 'none';
+}
+
+async function submitCreateNewBranch() {
+  const name = document.getElementById('newBranchNameInput').value.trim();
+  const startPoint = document.getElementById('newBranchStartPointInput').value.trim();
+  if (!name) {
+    showToast("Please enter a valid branch name", "warn");
     return;
   }
-  await ghdCheckoutBranch(input, true);
+  closeGhdNewBranchModal();
+  await ghdCheckoutBranch(name, true, startPoint);
 }
 
 // ─────────────────────────────────────────────────────────────
-// STASH MANAGEMENT (SAVE, POP, DROP, VIEW ALL)
+// ISSUES & PRS TAB
 // ─────────────────────────────────────────────────────────────
+async function loadGithubIssues() {
+  try {
+    const res = await fetch(`/api/git/issues?repo_path=${encodeURIComponent(currentRepoPath)}`);
+    const data = await res.json();
+    allGithubIssues = data.issues || [];
+    renderIssuesTab(allGithubIssues);
+    const issuesCountEl = document.getElementById('ghdIssuesCount');
+    if (issuesCountEl) issuesCountEl.innerText = allGithubIssues.length;
+  } catch(e) {}
+}
+
+function renderIssuesTab(issues) {
+  const container = document.getElementById('ghdIssuesList');
+  if (!container) return;
+  container.innerHTML = '';
+
+  let filtered = issues || [];
+  if (issueStateFilter !== 'all') {
+    filtered = filtered.filter(i => (i.state || 'open').toLowerCase() === issueStateFilter);
+  }
+
+  if (filtered.length === 0) {
+    container.innerHTML = `<div style="color:var(--text-muted); text-align:center; padding:30px;">No ${issueStateFilter} GitHub issues found.</div>`;
+    return;
+  }
+
+  filtered.forEach(issue => {
+    const card = document.createElement('div');
+    card.className = 'ghd-card-item';
+    card.setAttribute('data-context', 'issue');
+    card.setAttribute('data-issue-number', issue.number);
+    card.setAttribute('data-issue-title', issue.title);
+    card.setAttribute('data-issue-url', issue.url || '');
+    card.setAttribute('data-issue-state', issue.state || 'open');
+
+    const isOpen = (issue.state || 'open').toLowerCase() === 'open';
+    const statusBadge = isOpen ? 
+      '<span class="file-status-badge status-a">OPEN</span>' : 
+      '<span class="file-status-badge status-d">CLOSED</span>';
+
+    const labelsHtml = (issue.labels || []).map(l => 
+      `<span style="background:var(--ink-500); color:var(--accent); padding:1px 6px; border-radius:4px; font-size:10px; font-family:var(--font-mono);">${escapeHtml(l)}</span>`
+    ).join(' ');
+
+    card.innerHTML = `
+      <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:8px;">
+        <span style="font-weight:700; color:#fff; font-size:12.5px;">#${issue.number} ${escapeHtml(issue.title)}</span>
+        ${statusBadge}
+      </div>
+      ${labelsHtml ? `<div style="display:flex; flex-wrap:wrap; gap:4px;">${labelsHtml}</div>` : ''}
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-top:4px;">
+        <span style="font-size:11px; color:var(--text-muted);">👤 ${escapeHtml(issue.author || 'github')}</span>
+        <div style="display:flex; gap:6px;">
+          <button class="action-btn action-btn--success action-btn--sm" onclick="launchIssueInAutoDevLoop(${issue.number}, '${escapeJs(issue.title)}', '${escapeJs(issue.body || '')}')" title="Solve with Autonomous Swarm">
+            🚀 Implement with Swarm AI
+          </button>
+          ${issue.url ? `<a href="${escapeHtml(issue.url)}" target="_blank" class="ghd-mini-btn" style="text-decoration:none;" title="View on GitHub">🌐</a>` : ''}
+        </div>
+      </div>
+    `;
+    container.appendChild(card);
+  });
+}
+
+function filterIssuesByState(state) {
+  issueStateFilter = state;
+  const oBtn = document.getElementById('filterIssuesOpenBtn');
+  const cBtn = document.getElementById('filterIssuesClosedBtn');
+  const aBtn = document.getElementById('filterIssuesAllBtn');
+  if (oBtn) oBtn.style.background = state === 'open' ? 'var(--ink-600)' : 'transparent';
+  if (cBtn) cBtn.style.background = state === 'closed' ? 'var(--ink-600)' : 'transparent';
+  if (aBtn) aBtn.style.background = state === 'all' ? 'var(--ink-600)' : 'transparent';
+  renderIssuesTab(allGithubIssues);
+}
+
+function filterIssuesTabList(val) {
+  const query = val.toLowerCase();
+  const filtered = allGithubIssues.filter(i => 
+    i.title.toLowerCase().includes(query) ||
+    String(i.number).includes(query)
+  );
+  renderIssuesTab(filtered);
+}
+
+function launchIssueInAutoDevLoop(issueNum, issueTitle, issueBody) {
+  const promptGoal = `Resolve GitHub Issue #${issueNum}: ${issueTitle}\n\n${issueBody}`.trim();
+  setLoopGoalPrompt(promptGoal);
+  switchTab(2); // Switch to Auto-Dev Loop tab
+  showToast(`🚀 Loaded Issue #${issueNum} into Auto-Dev Loop goal!`, "success", 3500);
+}
+
+function openNewIssueDialog() {
+  const modal = document.getElementById('ghdNewIssueModal');
+  if (modal) {
+    modal.style.display = 'flex';
+    document.getElementById('newIssueTitleInput').value = '';
+    document.getElementById('newIssueBodyInput').value = '';
+    document.getElementById('newIssueLabelsInput').value = 'enhancement, swarm-auto';
+    document.getElementById('newIssueTitleInput').focus();
+  }
+}
+
+function closeGhdNewIssueModal() {
+  const modal = document.getElementById('ghdNewIssueModal');
+  if (modal) modal.style.display = 'none';
+}
+
+async function submitCreateNewIssue() {
+  const title = document.getElementById('newIssueTitleInput').value.trim();
+  const body = document.getElementById('newIssueBodyInput').value.trim();
+  const rawLabels = document.getElementById('newIssueLabelsInput').value.trim();
+  const labels = rawLabels ? rawLabels.split(',').map(s => s.trim()).filter(Boolean) : [];
+
+  if (!title) {
+    showToast("Please enter an issue title", "warn");
+    return;
+  }
+
+  closeGhdNewIssueModal();
+  try {
+    const res = await fetch('/api/git/issue/create', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        repo_path: currentRepoPath,
+        title: title,
+        body: body,
+        labels: labels
+      })
+    });
+    const data = await res.json();
+    if (data.success) {
+      showToast(`✓ Created GitHub issue #${data.issue_number}`, "success");
+      await loadGithubIssues();
+    } else {
+      showToast(`Issue creation error: ${data.stderr || data.error}`, "error");
+    }
+  } catch(e) { showToast(`Error: ${e.message}`, "error"); }
+}
+
+async function closeOrReopenIssue(issueNum, isClosed) {
+  const endpoint = isClosed ? '/api/git/issue/reopen' : '/api/git/issue/close';
+  try {
+    const res = await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ repo_path: currentRepoPath, issue_number: issueNum })
+    });
+    const data = await res.json();
+    if (data.success) {
+      showToast(`✓ ${isClosed ? 'Reopened' : 'Closed'} issue #${issueNum}`, "info");
+      await loadGithubIssues();
+    }
+  } catch(e) { showToast(`Error: ${e.message}`, "error"); }
+}
+
+// ─────────────────────────────────────────────────────────────
+// STASHES & WORKTREES TAB
+// ─────────────────────────────────────────────────────────────
+function renderStashesTab(stashes, worktrees) {
+  const stashesList = document.getElementById('ghdStashesInnerList');
+  if (stashesList) {
+    stashesList.innerHTML = '';
+    if (!stashes || stashes.length === 0) {
+      stashesList.innerHTML = '<div style="color:var(--text-muted); font-size:12px; padding:8px;">No saved stashes.</div>';
+    } else {
+      stashes.forEach(s => {
+        const card = document.createElement('div');
+        card.className = 'ghd-card-item';
+        card.innerHTML = `
+          <div style="display:flex; justify-content:space-between; align-items:center;">
+            <span style="font-weight:700; color:#fff; font-family:var(--font-mono);">📦 stash@{${s.index}}</span>
+            <span style="color:var(--accent); font-size:11px;">🌿 ${escapeHtml(s.branch)}</span>
+          </div>
+          <div style="font-size:12px; color:var(--text);">${escapeHtml(s.message)}</div>
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-top:4px;">
+            <span style="font-size:10.5px; color:var(--text-muted);">🕒 ${escapeHtml(s.date || '')}</span>
+            <div style="display:flex; gap:4px;">
+              <button class="ghd-mini-btn" onclick="popStash(${s.index})" title="Pop/Restore stash">↩️ Pop</button>
+              <button class="ghd-mini-btn ghd-mini-btn--danger" onclick="dropStash(${s.index})" title="Drop stash">🗑️</button>
+            </div>
+          </div>
+        `;
+        stashesList.appendChild(card);
+      });
+    }
+  }
+
+  const wtList = document.getElementById('ghdWorktreesInnerList');
+  if (wtList) {
+    wtList.innerHTML = '';
+    if (!worktrees || worktrees.length === 0) {
+      wtList.innerHTML = '<div style="color:var(--text-muted); font-size:12px; padding:8px;">No isolated worktrees.</div>';
+    } else {
+      worktrees.forEach(wt => {
+        const card = document.createElement('div');
+        card.className = 'ghd-card-item';
+        card.innerHTML = `
+          <div style="display:flex; justify-content:space-between; align-items:center;">
+            <span style="font-weight:700; color:#fff; font-family:var(--font-mono);">${wt.is_main ? '👑 Main' : '🌳 ' + escapeHtml(wt.display_path || wt.path)}</span>
+            <span style="color:var(--accent); font-size:11px;">🌿 ${escapeHtml(wt.branch || 'detached')}</span>
+          </div>
+          ${wt.is_main ? '' : `
+            <div style="display:flex; justify-content:flex-end; margin-top:4px;">
+              <button class="ghd-mini-btn ghd-mini-btn--danger" onclick="removeWorktreeAction('${escapeJs(wt.path)}')">🗑️ Remove</button>
+            </div>
+          `}
+        `;
+        wtList.appendChild(card);
+      });
+    }
+  }
+}
+
 async function quickStash() {
   const msg = prompt("Enter stash message (or leave blank for automatic timestamped message):");
   if (msg === null) return;
@@ -892,82 +2161,28 @@ async function dropStash(index = 0) {
     if (data.success) {
       showToast("✓ Stash discarded", "info");
       await loadGitHubDesktopState();
-      if (document.getElementById('stashModal').className.includes('active')) {
-        await loadStashesList();
-      }
     } else {
       showToast("Error discarding stash: " + (data.stderr || data.error), "error", 4500);
     }
   } catch(e) { showToast("Error: " + e.message, "error"); }
 }
 
-async function openStashesModal() {
-  document.getElementById('stashModal').className = 'modal-overlay active';
-  await loadStashesList();
-}
-
-function closeStashesModal() {
-  document.getElementById('stashModal').className = 'modal-overlay';
-}
-
-async function loadStashesList() {
-  const container = document.getElementById('stashesTableBody');
-  container.innerHTML = '<tr><td colspan="4" style="text-align:center; padding:16px; color:var(--text-muted);">Loading stashes...</td></tr>';
-  
-  try {
-    const res = await fetch(`/api/git/stashes?repo_path=${encodeURIComponent(currentRepoPath)}`, { cache: 'no-store' });
-    const data = await res.json();
-    const stashes = data.stashes || [];
-
-    container.innerHTML = '';
-    if (stashes.length === 0) {
-      container.innerHTML = '<tr><td colspan="4" style="text-align:center; padding:16px; color:var(--text-muted);">No saved stashes found.</td></tr>';
-      return;
-    }
-
-    stashes.forEach(s => {
-      const tr = document.createElement('tr');
-      tr.innerHTML = `
-        <td style="padding:10px 14px; font-family:monospace; color:#ffffff; font-weight:700;">
-          📦 ${escapeHtml(s.ref)}
-        </td>
-        <td style="padding:10px 14px; font-family:monospace; color:var(--accent);">🌿 ${escapeHtml(s.branch)}</td>
-        <td style="padding:10px 14px; font-family:monospace; color:#cbd5e1; font-size:12px;">
-          ${escapeHtml(s.message)}<br><span style="color:var(--text-muted); font-size:11px;">🕒 ${escapeHtml(s.date)}</span>
-        </td>
-        <td style="padding:10px 14px; text-align:right;">
-          <div style="display:inline-flex; gap:6px;">
-            <button class="action-btn" onclick="popStash(${s.index}); closeStashesModal();" style="background:#1d4ed8; color:#ffffff; border:none;">
-              ↩️ Restore
-            </button>
-            <button class="action-btn danger" onclick="dropStash(${s.index})">
-              🗑️ Discard
-            </button>
-          </div>
-        </td>
-      `;
-      container.appendChild(tr);
-    });
-
-  } catch(e) {
-    container.innerHTML = `<tr><td colspan="4" style="color:var(--rose); padding:16px;">Error loading stashes: ${escapeHtml(e.message)}</td></tr>`;
+async function openWorktreeModal() {
+  const modal = document.getElementById('worktreeModal');
+  if (modal) {
+    modal.className = 'modal-overlay active';
+    await loadWorktreesList();
   }
 }
 
-// ─────────────────────────────────────────────────────────────
-// WORKTREE MANAGER (LIST, CREATE, REMOVE LIKE GITHUB DESKTOP)
-// ─────────────────────────────────────────────────────────────
-async function openWorktreeModal() {
-  document.getElementById('worktreeModal').className = 'modal-overlay active';
-  await loadWorktreesList();
-}
-
 function closeWorktreeModal() {
-  document.getElementById('worktreeModal').className = 'modal-overlay';
+  const modal = document.getElementById('worktreeModal');
+  if (modal) modal.className = 'modal-overlay';
 }
 
 async function loadWorktreesList() {
   const container = document.getElementById('worktreesTableBody');
+  if (!container) return;
   container.innerHTML = '<tr><td colspan="4" style="text-align:center; padding:16px; color:var(--text-muted);">Loading active worktrees...</td></tr>';
   
   try {
@@ -985,12 +2200,12 @@ async function loadWorktreesList() {
       const tr = document.createElement('tr');
       const isMain = wt.is_main;
       tr.innerHTML = `
-        <td style="padding:10px 14px; font-family:monospace; color:#ffffff; font-weight:700;">
+        <td style="padding:10px 14px; font-family:var(--font-mono); color:var(--text-bright); font-weight:700;">
           ${isMain ? '👑 Main Repository' : '🌳 ' + escapeHtml(wt.display_path || wt.path)}
           ${isMain ? '<span class="file-status-badge status-a" style="margin-left:6px;">MAIN</span>' : ''}
         </td>
-        <td style="padding:10px 14px; font-family:monospace; color:var(--accent);">🌿 ${escapeHtml(wt.branch || 'detached')}</td>
-        <td style="padding:10px 14px; font-family:monospace; color:var(--text-muted); font-size:12px;">${escapeHtml(wt.commit || '')}</td>
+        <td style="padding:10px 14px; font-family:var(--font-mono); color:var(--accent);">🌿 ${escapeHtml(wt.branch || 'detached')}</td>
+        <td style="padding:10px 14px; font-family:var(--font-mono); color:var(--text-muted); font-size:12px;">${escapeHtml(wt.commit || '')}</td>
         <td style="padding:10px 14px; text-align:right;">
           ${isMain ? '<span style="color:var(--text-muted); font-size:11px;">Primary</span>' : `
             <button class="action-btn danger" onclick="removeWorktreeAction('${escapeJs(wt.path)}')">🗑️ Remove</button>
@@ -1067,7 +2282,7 @@ async function removeWorktreeAction(wtPath) {
       await loadWorktreesList();
       await loadGitHubDesktopState();
     } else {
-      const resForce = await fetch('/api/git/worktree/remove', {
+      await fetch('/api/git/worktree/remove', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ repo_path: currentRepoPath, path: wtPath, force: true })
@@ -1077,6 +2292,377 @@ async function removeWorktreeAction(wtPath) {
       showToast("✓ Force removed worktree", "info");
     }
   } catch(e) { showToast("Error: " + e.message, "error"); }
+}
+
+// ─────────────────────────────────────────────────────────────
+// GENERIC CONFIRMATION MODAL
+// ─────────────────────────────────────────────────────────────
+function openGhdConfirmModal(title, message, btnText, onConfirm) {
+  const modal = document.getElementById('ghdConfirmModal');
+  const titleEl = document.getElementById('ghdConfirmTitle');
+  const msgEl = document.getElementById('ghdConfirmMessage');
+  const btnEl = document.getElementById('ghdConfirmBtn');
+
+  if (titleEl) titleEl.innerHTML = title;
+  if (msgEl) msgEl.innerHTML = message;
+  if (btnEl) {
+    btnEl.innerText = btnText;
+    btnEl.onclick = async () => {
+      closeGhdConfirmModal();
+      if (typeof onConfirm === 'function') await onConfirm();
+    };
+  }
+  if (modal) modal.style.display = 'flex';
+}
+
+function closeGhdConfirmModal() {
+  const modal = document.getElementById('ghdConfirmModal');
+  if (modal) modal.style.display = 'none';
+}
+
+// ─────────────────────────────────────────────────────────────
+// CUSTOM RIGHT-CLICK CONTEXT MENU ENGINE
+// ─────────────────────────────────────────────────────────────
+function initCustomContextMenu() {
+  const tabGit = document.getElementById('tabGit');
+  const menu = document.getElementById('customContextMenu');
+  if (!tabGit || !menu) return;
+
+  tabGit.addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+    
+    // Find closest context element
+    const fileRow = e.target.closest('[data-context="file"]');
+    const branchItem = e.target.closest('[data-context="branch"]');
+    const commitItem = e.target.closest('[data-context="commit"]');
+    const issueItem = e.target.closest('[data-context="issue"]');
+
+    let menuItems = [];
+
+    if (fileRow) {
+      const filePath = fileRow.getAttribute('data-path');
+      const isStaged = fileRow.getAttribute('data-staged') === 'true';
+      const fileStatus = fileRow.getAttribute('data-status') || 'M';
+
+      menuItems = [
+        { header: `File: ${filePath.split('/').pop()}` },
+        {
+          icon: isStaged ? '↩️' : '📝',
+          label: isStaged ? 'Unstage File' : 'Stage File',
+          shortcut: isStaged ? 'Ctrl+U' : 'Ctrl+S',
+          action: () => isStaged ? unstageFile(filePath) : stageFile(filePath)
+        },
+        {
+          icon: '👁️',
+          label: 'View Diff in Viewer',
+          action: () => selectFileForDiff(filePath, isStaged)
+        },
+        {
+          icon: '📋',
+          label: 'Copy Relative Path',
+          action: () => {
+            navigator.clipboard.writeText(filePath);
+            showToast(`📋 Copied: ${filePath}`, "info", 1800);
+          }
+        },
+        {
+          icon: '🤖',
+          label: 'Send to Auto-Dev Loop',
+          action: () => {
+            selectFileForDiff(filePath, isStaged).then(() => sendSelectedFileToLoop());
+          }
+        },
+        { separator: true },
+        {
+          icon: '🗑️',
+          label: 'Discard Changes...',
+          danger: true,
+          action: () => discardFileConfirm(filePath)
+        }
+      ];
+
+    } else if (branchItem) {
+      const branchName = branchItem.getAttribute('data-branch');
+      const isCurrent = currentGhdState && currentGhdState.branch === branchName;
+
+      menuItems = [
+        { header: `Branch: ${branchName}` },
+        ...(isCurrent ? [] : [
+          {
+            icon: '🔀',
+            label: 'Switch to this Branch',
+            action: () => ghdCheckoutBranch(branchName, false)
+          }
+        ]),
+        {
+          icon: '🌿',
+          label: 'Create New Branch from Here...',
+          action: () => openNewBranchDialog(branchName)
+        },
+        ...(isCurrent ? [] : [
+          {
+            icon: '🔄',
+            label: `Merge '${branchName}' into '${currentGhdState?.branch || 'main'}'`,
+            action: () => ghdMergeBranchConfirm(branchName)
+          }
+        ]),
+        {
+          icon: '⬆️',
+          label: 'Push / Publish Branch',
+          action: async () => {
+            try {
+              const res = await fetch('/api/git/push', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ repo_path: currentRepoPath, branch: branchName, set_upstream: true })
+              });
+              const data = await res.json();
+              if (data.success) showToast(`✓ Pushed '${branchName}' to origin`, "success");
+              else showToast(`Push failed: ${data.stderr || data.error}`, "error");
+            } catch(e) { showToast(`Error: ${e.message}`, "error"); }
+          }
+        },
+        ...(isCurrent ? [] : [
+          { separator: true },
+          {
+            icon: '🗑️',
+            label: 'Delete Branch...',
+            danger: true,
+            action: () => ghdDeleteBranchConfirm(branchName)
+          }
+        ])
+      ];
+
+    } else if (commitItem) {
+      const sha = commitItem.getAttribute('data-sha');
+      const shortSha = commitItem.getAttribute('data-short-sha');
+      const subject = commitItem.getAttribute('data-subject');
+
+      menuItems = [
+        { header: `Commit: ${shortSha}` },
+        {
+          icon: '📋',
+          label: 'Copy Commit SHA',
+          action: () => {
+            navigator.clipboard.writeText(sha);
+            showToast(`📋 Copied SHA: ${shortSha}`, "info", 1800);
+          }
+        },
+        {
+          icon: '🌿',
+          label: 'Create Branch from Commit...',
+          action: () => openNewBranchDialog(sha)
+        },
+        {
+          icon: '🔍',
+          label: 'View Full Commit Diff',
+          action: () => selectCommitForInspection({ hash: sha, short_hash: shortSha, subject: subject })
+        },
+        { separator: true },
+        {
+          icon: '↩️',
+          label: 'Revert this Commit...',
+          danger: true,
+          action: () => {
+            openGhdConfirmModal(
+              "↩️ Revert Commit",
+              `Create a revert commit that undoes changes made in <b>${escapeHtml(shortSha)} - ${escapeHtml(subject)}</b>?`,
+              "Revert Commit",
+              async () => {
+                try {
+                  const res = await fetch('/api/git/commit/revert', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ repo_path: currentRepoPath, commit_sha: sha })
+                  });
+                  const data = await res.json();
+                  if (data.success) {
+                    showToast(`✓ Reverted commit ${shortSha}`, "success");
+                    await loadGitHubDesktopState();
+                  } else {
+                    showToast(`Revert error: ${data.stderr || data.error}`, "error");
+                  }
+                } catch(e) { showToast(`Error: ${e.message}`, "error"); }
+              }
+            );
+          }
+        },
+        {
+          icon: '🔙',
+          label: 'Reset to this Commit (Soft)...',
+          danger: true,
+          action: () => {
+            openGhdConfirmModal(
+              "🔙 Soft Reset",
+              `Reset HEAD to commit <b>${escapeHtml(shortSha)}</b>? Your working changes will be preserved as uncommitted.`,
+              "Reset (Soft)",
+              async () => {
+                try {
+                  const res = await fetch('/api/git/commit/reset', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ repo_path: currentRepoPath, commit_sha: sha, mode: 'soft' })
+                  });
+                  const data = await res.json();
+                  if (data.success) {
+                    showToast(`✓ Soft reset to ${shortSha}`, "info");
+                    await loadGitHubDesktopState();
+                  }
+                } catch(e) { showToast(`Error: ${e.message}`, "error"); }
+              }
+            );
+          }
+        }
+      ];
+
+    } else if (issueItem) {
+      const issueNum = parseInt(issueItem.getAttribute('data-issue-number'), 10);
+      const issueTitle = issueItem.getAttribute('data-issue-title');
+      const issueUrl = issueItem.getAttribute('data-issue-url');
+      const issueState = issueItem.getAttribute('data-issue-state') || 'open';
+      const isOpen = issueState.toLowerCase() === 'open';
+
+      menuItems = [
+        { header: `Issue #${issueNum}` },
+        {
+          icon: '🚀',
+          label: 'Launch Auto-Dev Loop on Issue',
+          action: () => launchIssueInAutoDevLoop(issueNum, issueTitle, "")
+        },
+        ...(issueUrl ? [
+          {
+            icon: '🌐',
+            label: 'View on GitHub',
+            action: () => window.open(issueUrl, '_blank')
+          }
+        ] : []),
+        { separator: true },
+        {
+          icon: isOpen ? '🔒' : '🔓',
+          label: isOpen ? 'Close Issue' : 'Reopen Issue',
+          action: () => closeOrReopenIssue(issueNum, !isOpen)
+        }
+      ];
+
+    } else {
+      // General Canvas / Empty Area
+      menuItems = [
+        { header: `Git: ${currentGhdState?.repo_name || 'Workspace'}` },
+        {
+          icon: '🔄',
+          label: 'Fetch Origin All',
+          action: () => ghdFetch()
+        },
+        {
+          icon: '⬇️',
+          label: 'Pull from Remote',
+          action: () => ghdPull()
+        },
+        {
+          icon: '⬆️',
+          label: 'Push Commits to Remote',
+          action: () => ghdPush()
+        },
+        { separator: true },
+        {
+          icon: '🌿',
+          label: 'Create New Branch...',
+          action: () => openNewBranchDialog()
+        },
+        {
+          icon: '📦',
+          label: 'Stash Working Changes...',
+          action: () => quickStash()
+        },
+        {
+          icon: '📤',
+          label: 'Pop Latest Stash',
+          action: () => popStash(0)
+        },
+        { separator: true },
+        {
+          icon: '💬',
+          label: 'Transfer Git Status to Advisor Chat',
+          action: () => {
+            const prompt = `Here is the current Git status for repository '${currentGhdState?.repo_name}':\n- Current Branch: ${currentGhdState?.branch}\n- Ahead: ${currentGhdState?.ahead}, Behind: ${currentGhdState?.behind}\n- Staged Files: ${(currentGhdState?.staged || []).map(f=>f.path).join(', ') || 'None'}\n- Unstaged Files: ${(currentGhdState?.unstaged || []).map(f=>f.path).join(', ') || 'None'}\n\nPlease review these changes and recommend next steps.`;
+            document.getElementById('promptInput').value = prompt;
+            switchTab(1); // Switch to Chat Tab
+            showToast("💬 Transferred Git status to Advisor prompt", "info");
+          }
+        }
+      ];
+    }
+
+    renderCustomContextMenu(menu, menuItems, e.clientX, e.clientY);
+  });
+
+  // Global dismiss listeners
+  document.addEventListener('click', () => hideCustomContextMenu());
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      hideCustomContextMenu();
+      closeGhdConfirmModal();
+      closeGhdNewBranchModal();
+      closeGhdNewIssueModal();
+    }
+  });
+}
+
+function renderCustomContextMenu(menu, items, x, y) {
+  menu.innerHTML = '';
+
+  items.forEach(item => {
+    if (item.header) {
+      const h = document.createElement('div');
+      h.className = 'context-menu-header';
+      h.innerText = item.header;
+      menu.appendChild(h);
+    } else if (item.separator) {
+      const sep = document.createElement('div');
+      sep.className = 'context-menu-separator';
+      menu.appendChild(sep);
+    } else {
+      const el = document.createElement('div');
+      el.className = `context-menu-item ${item.danger ? 'danger' : ''}`;
+      el.onclick = (ev) => {
+        ev.stopPropagation();
+        hideCustomContextMenu();
+        if (typeof item.action === 'function') item.action();
+      };
+      el.innerHTML = `
+        <span class="context-menu-label">
+          <span class="context-menu-icon">${item.icon || '•'}</span>
+          <span>${escapeHtml(item.label)}</span>
+        </span>
+        ${item.shortcut ? `<span class="context-menu-shortcut">${item.shortcut}</span>` : ''}
+      `;
+      menu.appendChild(el);
+    }
+  });
+
+  menu.style.display = 'flex';
+  menu.style.visibility = 'hidden';
+
+  // Boundary collision detection
+  const menuRect = menu.getBoundingClientRect();
+  let left = x;
+  let top = y;
+
+  if (x + menuRect.width > window.innerWidth - 10) {
+    left = window.innerWidth - menuRect.width - 10;
+  }
+  if (y + menuRect.height > window.innerHeight - 10) {
+    top = window.innerHeight - menuRect.height - 10;
+  }
+
+  menu.style.left = `${Math.max(10, left)}px`;
+  menu.style.top = `${Math.max(10, top)}px`;
+  menu.style.visibility = 'visible';
+}
+
+function hideCustomContextMenu() {
+  const menu = document.getElementById('customContextMenu');
+  if (menu) menu.style.display = 'none';
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -1120,13 +2706,18 @@ async function startNewChat() {
     });
     const sess = await res.json();
     activeSessionId = sess.id;
+    toggleMobileChatSidebar(false);
     await loadSessionsList();
   } catch(e) { handleServerDisconnected(); }
 }
 
 async function switchSession(id) {
-  if (activeSessionId === id) return;
+  if (activeSessionId === id) {
+    toggleMobileChatSidebar(false);
+    return;
+  }
   activeSessionId = id;
+  toggleMobileChatSidebar(false);
   
   // Instant visual feedback on sidebar
   const items = document.querySelectorAll('.session-item');
@@ -1173,7 +2764,7 @@ async function loadActiveSessionMessages() {
       <div class="msg-assistant">
         <div class="msg-header">
           <div class="msg-author">🤖 Direct Lead Advisor (Session: ${escapeHtml(sess.title)})</div>
-          <span style="font-size:12px; color:var(--green); font-weight:700;">Ready</span>
+          <span class="status-badge badge-online">Ready</span>
         </div>
         <div class="markdown-body">
           <p>Active session loaded. All tasks dynamically allocate sub-agent slots with tailored skills.</p>
@@ -1223,7 +2814,10 @@ async function loadActiveSessionMessages() {
           <div class="msg-assistant" id="${msgId}">
             <div class="msg-header">
               <div class="msg-author">🤖 Direct Lead Advisor (Dynamic GPU Swarm)</div>
-              <span style="font-size:12px; color:var(--green); font-weight:700;">✓ ${turn.duration || 1.5}s</span>
+              <div class="ghd-toolbar-group">
+                <button class="action-btn action-btn--accent action-btn--sm" onclick="transferAdvisorChatToLoop()" title="Transfer blueprint to Auto-Dev Loop">🚀 Transfer to Loop</button>
+                <span class="chip chip--green">✓ ${turn.duration || 1.5}s</span>
+              </div>
             </div>
             <div class="status-timeline">
               ${(turn.status_steps || []).map(s => `<div>${escapeHtml(s)}</div>`).join('')}
@@ -1254,10 +2848,10 @@ function toggleArtifactsFilter(mode) {
   const selBtn = document.getElementById('vaultFilterSelectedBtn');
   const allBtn = document.getElementById('vaultFilterAllBtn');
   if (selBtn && allBtn) {
-    selBtn.style.background = (mode === 'selected') ? '#1d4ed8' : '#1e293b';
-    selBtn.style.color = (mode === 'selected') ? '#ffffff' : 'var(--text)';
-    allBtn.style.background = (mode === 'all') ? '#1d4ed8' : '#1e293b';
-    allBtn.style.color = (mode === 'all') ? '#ffffff' : 'var(--text)';
+    selBtn.style.background = (mode === 'selected') ? 'var(--primary-strong)' : 'var(--ink-500)';
+    selBtn.style.color = (mode === 'selected') ? 'var(--text-bright)' : 'var(--text)';
+    allBtn.style.background = (mode === 'all') ? 'var(--primary-strong)' : 'var(--ink-500)';
+    allBtn.style.color = (mode === 'all') ? 'var(--text-bright)' : 'var(--text)';
   }
   loadArtifactsVault();
 }
@@ -1283,8 +2877,8 @@ async function loadArtifactsVault() {
 
     if (groups.length === 0) {
       container.innerHTML = `
-        <div style="text-align:center; color:var(--text-muted); padding:36px; background:#0b1120; border:1px solid #1e293b; border-radius:10px;">
-          <div style="font-size:15px; font-weight:700; color:#ffffff; margin-bottom:6px;">No artifacts found for ${vaultFilterMode === 'selected' ? 'current repository (' + (selRepoName || 'Selected') + ')' : 'any repository'}</div>
+        <div style="text-align:center; color:var(--text-muted); padding:36px; background:var(--ink-800); border:1px solid var(--ink-500); border-radius:10px;">
+          <div style="font-size:15px; font-weight:700; color:var(--text-bright); margin-bottom:6px;">No artifacts found for ${vaultFilterMode === 'selected' ? 'current repository (' + (selRepoName || 'Selected') + ')' : 'any repository'}</div>
           <div style="font-size:12.5px; margin-bottom:14px;">Generate an audit, implementation plan, or autonomous feature to produce markdown deliverables.</div>
           <button class="action-btn" onclick="toggleArtifactsFilter('all')">🌐 View All Repositories</button>
         </div>
@@ -1301,11 +2895,11 @@ async function loadArtifactsVault() {
       grp.artifacts.forEach(art => {
         const sizeKb = (art.size / 1024).toFixed(1) + ' KB';
         rowsHtml += `
-          <tr style="border-bottom:1px solid #1a2538;">
-            <td style="padding:10px 16px; font-weight:700; color:#ffffff;">📄 ${escapeHtml(art.name)}</td>
+          <tr style="border-bottom:1px solid var(--ink-600);">
+            <td style="padding:10px 16px; font-weight:700; color:var(--text-bright);">📄 ${escapeHtml(art.name)}</td>
             <td style="padding:10px 16px;"><span class="file-status-badge status-u">${escapeHtml(art.type)}</span></td>
-            <td style="padding:10px 16px; font-family:monospace; color:var(--text-muted); font-size:12px;">${sizeKb}</td>
-            <td style="padding:10px 16px; font-family:monospace; color:var(--text-muted); font-size:12px;">${escapeHtml(art.modified)}</td>
+            <td style="padding:10px 16px; font-family:var(--font-mono); color:var(--text-muted); font-size:12px;">${sizeKb}</td>
+            <td style="padding:10px 16px; font-family:var(--font-mono); color:var(--text-muted); font-size:12px;">${escapeHtml(art.modified)}</td>
             <td style="padding:10px 16px; text-align:right;">
               <div style="display:inline-flex; gap:6px;">
                 <button class="action-btn" onclick="openRemoteArtifact('${escapeJs(art.path)}', '${escapeJs(art.name)}')">👁️ Read</button>
@@ -1317,18 +2911,18 @@ async function loadArtifactsVault() {
       });
 
       card.innerHTML = `
-        <div class="repo-group-header" onclick="toggleArtifactGroup('${escapeJs(grp.repo_name)}')" style="${isCurrentRepo ? 'border-left: 4px solid var(--accent); background:#111c33;' : ''}">
+        <div class="repo-group-header" onclick="toggleArtifactGroup('${escapeJs(grp.repo_name)}')" style="${isCurrentRepo ? 'border-left: 4px solid var(--accent); background:var(--ink-600);' : ''}">
           <div class="repo-group-title">
             <span>📁 Repository: <b>${escapeHtml(grp.repo_name)}</b></span>
             ${isCurrentRepo ? '<span class="file-status-badge status-a">ACTIVE REPO</span>' : ''}
             <span class="file-status-badge status-u">${grp.count} Document${grp.count === 1 ? '' : 's'}</span>
           </div>
-          <span id="group-icon-${escapeJs(grp.repo_name)}" style="color:var(--accent); font-weight:800;">▾</span>
+          <span id="group-icon-${escapeJs(grp.repo_name)}" style="color:var(--accent); font-weight:700;">▾</span>
         </div>
         <div id="group-body-${escapeJs(grp.repo_name)}" style="display:block;">
-          <table style="width:100%; border-collapse:collapse; background:#070a12;">
+          <table style="width:100%; border-collapse:collapse; background:var(--ink-900);">
             <thead>
-              <tr style="background:#090d16; border-bottom:1px solid #1e293b; color:#93c5fd; font-size:11.5px; text-align:left;">
+              <tr style="background:var(--ink-850); border-bottom:1px solid var(--ink-500); color:var(--accent); font-size:11.5px; text-align:left;">
                 <th style="padding:8px 16px;">Document Name</th>
                 <th style="padding:8px 16px;">Type</th>
                 <th style="padding:8px 16px;">Size</th>
@@ -1354,6 +2948,61 @@ async function loadArtifactsVault() {
 let allInstalledSkills = [];
 let activeSkillCategory = 'all';
 
+const SKILL_CATEGORY_META = {
+  'all': { label: 'All Skills', icon: '⚡' },
+  'Security & Audit': { label: 'Security & Audit', icon: '🛡️' },
+  'Testing & QA': { label: 'Testing & QA', icon: '🧪' },
+  'Architecture & Planning': { label: 'Architecture & Planning', icon: '📐' },
+  'Frontend & UI/UX': { label: 'Frontend & UI/UX', icon: '🎨' },
+  'Codebase Intelligence & Git': { label: 'Codebase Intelligence & Git', icon: '🌿' },
+  'Agent Extensions & Customization': { label: 'Agent Extensions & Customization', icon: '🧩' },
+  'Research & Documentation': { label: 'Research & Documentation', icon: '📚' }
+};
+
+function renderSkillCategoryPills() {
+  const container = document.getElementById('skillCategoryPills');
+  if (!container) return;
+
+  const counts = { 'all': allInstalledSkills.length };
+  allInstalledSkills.forEach(s => {
+    const cat = (s.category || 'Research & Documentation').trim();
+    counts[cat] = (counts[cat] || 0) + 1;
+  });
+
+  const categories = [
+    'all',
+    'Security & Audit',
+    'Testing & QA',
+    'Architecture & Planning',
+    'Frontend & UI/UX',
+    'Codebase Intelligence & Git',
+    'Agent Extensions & Customization',
+    'Research & Documentation'
+  ];
+
+  container.innerHTML = '';
+  categories.forEach(cat => {
+    const meta = SKILL_CATEGORY_META[cat] || { label: cat, icon: '🏷️' };
+    const count = counts[cat] || 0;
+    const btn = document.createElement('button');
+    const isActive = (activeSkillCategory.trim().toLowerCase() === cat.trim().toLowerCase());
+    btn.className = isActive ? 'action-btn active' : 'action-btn';
+    btn.dataset.category = cat;
+    btn.innerHTML = `${meta.icon} ${meta.label} <span style="opacity:0.75; font-size:11px; margin-left:2px;">(${count})</span>`;
+    if (isActive) {
+      btn.style.background = 'var(--ink-500)';
+      btn.style.color = 'var(--accent)';
+      btn.style.borderColor = 'var(--accent)';
+    } else {
+      btn.style.background = 'var(--ink-700)';
+      btn.style.color = 'var(--text-muted)';
+      btn.style.borderColor = 'var(--line-strong)';
+    }
+    btn.onclick = () => filterSkillsByCategory(cat);
+    container.appendChild(btn);
+  });
+}
+
 async function loadSkillsCatalog() {
   try {
     const res = await fetch('/api/skills/catalog', { cache: 'no-store' });
@@ -1364,6 +3013,7 @@ async function loadSkillsCatalog() {
     if (countBadge) {
       countBadge.innerText = `⚡ ${allInstalledSkills.length} Live Skills`;
     }
+    renderSkillCategoryPills();
     renderSkillsGrid(allInstalledSkills);
   } catch(e) {}
 }
@@ -1373,16 +3023,17 @@ function filterSkillsByCategory(cat) {
   
   const pills = document.querySelectorAll('#skillCategoryPills .action-btn');
   pills.forEach(p => {
-    if ((cat === 'all' && p.innerText.includes('All')) || p.innerText.includes(cat)) {
+    const isTarget = (p.dataset.category && p.dataset.category.trim().toLowerCase() === cat.trim().toLowerCase());
+    if (isTarget) {
       p.className = 'action-btn active';
-      p.style.background = '#1e293b';
+      p.style.background = 'var(--ink-500)';
       p.style.color = 'var(--accent)';
       p.style.borderColor = 'var(--accent)';
     } else {
       p.className = 'action-btn';
-      p.style.background = '#0f172a';
+      p.style.background = 'var(--ink-700)';
       p.style.color = 'var(--text-muted)';
-      p.style.borderColor = '#334155';
+      p.style.borderColor = 'var(--line-strong)';
     }
   });
 
@@ -1394,10 +3045,17 @@ function filterLegendCards(query) {
 }
 
 function applySkillsFilter(searchQuery = "") {
-  const q = (searchQuery || document.getElementById('legendFilterInput')?.value || '').toLowerCase().trim();
+  const inputEl = document.getElementById('legendFilterInput');
+  const q = (typeof searchQuery === 'string' && searchQuery.trim() !== ''
+    ? searchQuery
+    : (inputEl ? inputEl.value : '')
+  ).toLowerCase().trim();
+  
   const filtered = allInstalledSkills.filter(s => {
-    const matchesCat = (activeSkillCategory === 'all' || s.category === activeSkillCategory);
-    const text = (s.name + ' ' + s.description + ' ' + s.role + ' ' + s.category + ' ' + (s.tools || []).join(' ')).toLowerCase();
+    const sCat = (s.category || 'Research & Documentation').trim();
+    const activeCat = (activeSkillCategory || 'all').trim();
+    const matchesCat = (activeCat.toLowerCase() === 'all' || sCat.toLowerCase() === activeCat.toLowerCase());
+    const text = (s.name + ' ' + s.description + ' ' + s.role + ' ' + sCat + ' ' + (s.tools || []).join(' ')).toLowerCase();
     const matchesQuery = (!q || text.includes(q));
     return matchesCat && matchesQuery;
   });
@@ -1421,11 +3079,11 @@ function renderSkillsGrid(skills) {
     
     card.innerHTML = `
       <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:8px;">
-        <span style="font-weight:800; color:#ffffff; font-size:13.5px;">${escapeHtml(s.name)}</span>
+        <span style="font-weight:700; color:var(--text-bright); font-size:13.5px;">${escapeHtml(s.name)}</span>
         <span class="file-status-badge status-u" style="font-size:10px; white-space:nowrap;">${escapeHtml(s.category)}</span>
       </div>
       <div style="font-size:12px; color:var(--accent); font-weight:700;">${escapeHtml(s.role)}</div>
-      <div style="font-size:12px; color:#cbd5e1; line-height:1.45; flex:1;">${escapeHtml(s.description)}</div>
+      <div style="font-size:12px; color:var(--text); line-height:1.45; flex:1;">${escapeHtml(s.description)}</div>
       <div style="display:flex; flex-wrap:wrap; gap:4px; margin-top:6px;">${toolsHtml}</div>
     `;
     container.appendChild(card);
@@ -1522,7 +3180,7 @@ async function fetchLiveDebugLogs() {
       div.className = `debug-log-entry ${lvl === 'error' ? 'error' : (lvl === 'warn' ? 'warn' : '')}`;
       div.innerHTML = `
         <div><span style="color:var(--text-muted);">[${escapeHtml(log.timestamp)}]</span> <b style="color:var(--accent);">[${escapeHtml(log.category)}]</b> ${escapeHtml(log.action)}</div>
-        ${log.error ? `<div style="color:#fca5a5; font-size:11px; margin-top:2px;">↳ ${escapeHtml(log.error)}</div>` : ''}
+        ${log.error ? `<div style="color:var(--rose); font-size:11px; margin-top:2px;">↳ ${escapeHtml(log.error)}</div>` : ''}
       `;
       list.appendChild(div);
     });
@@ -1558,7 +3216,12 @@ async function loadRepos() {
       sel.appendChild(opt);
     });
 
-    currentRepoPath = repos[0].path;
+    // Restore the previously selected repo if it still exists; else default to first.
+    let saved = "";
+    try { saved = localStorage.getItem('swarm_selected_repo') || ""; } catch(_) {}
+    const match = saved && repos.find(r => r.path === saved);
+    currentRepoPath = match ? saved : repos[0].path;
+    sel.value = currentRepoPath;
   } catch(e) {
     handleServerDisconnected();
   }
@@ -1626,41 +3289,69 @@ async function updateModelAssignment(targetKey, modelId) {
 // ─────────────────────────────────────────────────────────────
 // Dynamic Sub-Agent Topology Synchronizer & Disconnection Handler
 // ─────────────────────────────────────────────────────────────
-async function updateTelemetryAndTopology() {
-  try {
-    const controller = new AbortController();
-    const tId = setTimeout(() => controller.abort(), 2000);
-    const res = await fetch('/api/metrics', { cache: 'no-store', signal: controller.signal });
-    clearTimeout(tId);
-    
-    if (!res.ok) {
-      handleServerDisconnected();
-      return;
-    }
+// Render a combined state snapshot (from the SSE stream or a one-shot fetch).
+function applyStateSnapshot(data) {
+  if (!data) return;
+  handleServerConnected();
 
-    const data = await res.json();
-    handleServerConnected();
+  if (data.metrics && data.metrics.gpu) {
+    const gpu = data.metrics.gpu;
+    const vramGb = (gpu.mem_used / 1024).toFixed(1);
+    document.getElementById('vramVal').innerText = `VRAM: ${vramGb}/16GB (${gpu.mem_percent}%)`;
+    document.getElementById('gpuVal').innerText = `GPU: ${gpu.util}% (${gpu.temp}°C)`;
+    document.getElementById('ramVal').innerText = `RAM: ${data.metrics.ram_used_gb}/${data.metrics.ram_total_gb}GB`;
+  }
 
-    if (data && data.metrics && data.metrics.gpu) {
-      const gpu = data.metrics.gpu;
-      const vramGb = (gpu.mem_used / 1024).toFixed(1);
-      document.getElementById('vramVal').innerText = `VRAM: ${vramGb}/16GB (${gpu.mem_percent}%)`;
-      document.getElementById('gpuVal').innerText = `GPU: ${gpu.util}% (${gpu.temp}°C)`;
-      document.getElementById('ramVal').innerText = `RAM: ${data.metrics.ram_used_gb}/${data.metrics.ram_total_gb}GB`;
-    }
-    
-    const mVal = document.getElementById('modelVal');
-    if (data && data.status && data.status.lfm) {
+  const mVal = document.getElementById('modelVal');
+  if (mVal) {
+    if (data.status && data.status.lfm) {
       mVal.innerText = 'LFM 2.5: 8 SLOTS READY';
       mVal.style.color = 'var(--green)';
     } else {
       mVal.innerText = 'LFM 2.5: HOST OFFLINE';
       mVal.style.color = 'var(--orange)';
     }
+  }
 
-    if (data.topology) {
-      renderDynamicTopology(data.topology);
-    }
+  if (data.topology) renderDynamicTopology(data.topology);
+  // Only refresh the loop dashboard while its tab is visible (matches prior polling scope).
+  const loopTab = document.getElementById('tabLoop');
+  if (data.loop_state && loopTab && loopTab.classList.contains('active')) {
+    renderLoopDashboard(data.loop_state);
+  }
+}
+
+// Single real-time channel: one EventSource replaces per-second polling of
+// /api/metrics and /api/loop/status. The browser makes the initial request;
+// the server pushes updates and the client auto-reconnects on drop.
+let _eventSource = null;
+function initEventStream() {
+  if (typeof EventSource === 'undefined') {
+    // Fallback for ancient browsers: low-frequency polling.
+    updateTelemetryAndTopology();
+    if (!pollInterval) pollInterval = setInterval(updateTelemetryAndTopology, 3000);
+    return;
+  }
+  try { if (_eventSource) _eventSource.close(); } catch(_) {}
+  _eventSource = new EventSource('/api/events');
+  _eventSource.addEventListener('state', (e) => {
+    try { applyStateSnapshot(JSON.parse(e.data)); } catch(_) {}
+  });
+  _eventSource.onerror = () => {
+    // EventSource retries automatically (server sends `retry:`); reflect offline meanwhile.
+    handleServerDisconnected();
+  };
+}
+
+// One-shot fetch — used as a fallback and for instant refresh after user actions.
+async function updateTelemetryAndTopology() {
+  try {
+    const controller = new AbortController();
+    const tId = setTimeout(() => controller.abort(), 2000);
+    const res = await fetch('/api/metrics', { cache: 'no-store', signal: controller.signal });
+    clearTimeout(tId);
+    if (!res.ok) { handleServerDisconnected(); return; }
+    applyStateSnapshot(await res.json());
   } catch(e) {
     handleServerDisconnected();
   }
@@ -1699,26 +3390,37 @@ function renderDynamicTopology(topo) {
       const isRunning = (s.status === 'running');
       card.style.cssText = `background:var(--card-bg); border:1.5px solid ${isRunning ? 'var(--green)' : 'var(--card-border)'}; border-radius:12px; padding:12px; width:280px; display:flex; flex-direction:column; gap:6px; box-shadow:0 8px 24px rgba(0,0,0,0.5);`;
       
-      const toolsHtml = (s.tools || []).map(t => `<span style="font-family:monospace; font-size:9.5px; background:#1e293b; color:#93c5fd; padding:2px 6px; border-radius:4px; border:1px solid #334155;">${escapeHtml(t)}</span>`).join(' ');
+      const toolsHtml = (s.tools || []).map(t => `<span style="font-family:var(--font-mono); font-size:9.5px; background:var(--ink-500); color:var(--accent); padding:2px 6px; border-radius:4px; border:1px solid var(--line-strong);">${escapeHtml(t)}</span>`).join(' ');
 
       card.innerHTML = `
         <div style="display:flex; justify-content:space-between; align-items:center;">
-          <span style="font-weight:800; color:#ffffff; font-size:13px;">${escapeHtml(s.name)}</span>
+          <span style="font-weight:700; color:var(--text-bright); font-size:13px;">${escapeHtml(s.name)}</span>
           <span class="status-badge ${isRunning ? 'badge-running' : (s.status === 'online' ? 'badge-online' : 'badge-idle')}">${escapeHtml(s.status.toUpperCase())}</span>
         </div>
-        <div style="font-size:10.5px; color:#94a3b8; font-weight:800;">${escapeHtml(s.role || 'Level 3 Sub-Agent')}</div>
-        <div style="font-family:monospace; font-size:11px; background:#070a12; color:var(--accent); border:1px solid #1e293b; padding:3px 7px; border-radius:6px; font-weight:700;">🎯 Skill: ${escapeHtml(s.skill || 'Specialist')}</div>
-        <div class="agent-task" style="font-family:monospace; font-size:11px; background:#070a12; padding:6px 10px; border-radius:8px; border:1px solid #1e293b; color:#ffffff;">${escapeHtml(s.task || 'Idle')}</div>
+        <div style="font-size:10.5px; color:var(--text-muted); font-weight:700;">${escapeHtml(s.role || 'Level 3 Sub-Agent')}</div>
+        <div style="font-family:var(--font-mono); font-size:11px; background:var(--ink-900); color:var(--accent); border:1px solid var(--ink-500); padding:3px 7px; border-radius:6px; font-weight:700;">🎯 Skill: ${escapeHtml(s.skill || 'Specialist')}</div>
+        <div class="agent-task" style="font-family:var(--font-mono); font-size:11px; background:var(--ink-900); padding:6px 10px; border-radius:8px; border:1px solid var(--ink-500); color:var(--text-bright);">${escapeHtml(s.task || 'Idle')}</div>
         <div style="display:flex; flex-wrap:wrap; gap:4px;">${toolsHtml}</div>
       `;
       subContainer.appendChild(card);
     });
   }
 
+  const activePillVal = document.getElementById('activeAgentsVal');
+  if (activePillVal) {
+    if (runningCount > 0) {
+      activePillVal.innerText = `⚡ ${runningCount} / 8 Active`;
+      activePillVal.style.color = 'var(--green)';
+    } else {
+      activePillVal.innerText = `0 / 8 Active`;
+      activePillVal.style.color = 'var(--accent)';
+    }
+  }
+
   const badge = document.getElementById('agentCountBadge');
   if (badge) {
     if (runningCount > 0) {
-      badge.innerText = `🟢 ${runningCount} / ${totalNodes} Agents Active (Running)`;
+      badge.innerText = `🟢 ${runningCount} / ${totalNodes} Agents Active (${runningCount} Running in Parallel)`;
       badge.style.borderColor = 'var(--green)';
       badge.style.color = 'var(--green)';
     } else {
@@ -1753,28 +3455,38 @@ function filterLegendCards(val) {
   });
 }
 
-function setPollingSpeed(fast) {
-  if (pollInterval) clearInterval(pollInterval);
-  pollInterval = setInterval(updateTelemetryAndTopology, fast ? 300 : 1200);
-}
+// Kept for callers, but a no-op now: the SSE stream (/api/events) adapts its own
+// cadence server-side — ~1s while agents run, ~3s idle — so no client interval is
+// needed. Starting one here would double-render against the stream.
+function setPollingSpeed(fast) { /* handled by the SSE stream */ }
 
 window.addEventListener('DOMContentLoaded', async () => {
+  initSplitResizers();
+  initCustomContextMenu();
   await loadRepos();
   await loadSessionsList();
+  await loadLoopSessionsList();
   await loadModelCatalogAndAssignments();
   await loadSkillsCatalog();
   await loadBackendsStatus();
-  updateTelemetryAndTopology();
-  setPollingSpeed(false);
+  initEventStream();
+});
+
+window.addEventListener('resize', () => {
+  if (window.innerWidth <= 768) {
+    toggleGhdMobileView('list');
+  }
 });
 
 function onRepoChanged() {
   const sel = document.getElementById('repoSelect');
   currentRepoPath = sel.value;
+  try { localStorage.setItem('swarm_selected_repo', currentRepoPath); } catch(_) {}
   selectedGhdFile = "";
   selectedGhdCommit = "";
   loadGitHubDesktopState();
   loadArtifactsVault();
+  loadLoopSessionsList();
   pollLoopState();
   showToast(`Switched repository: ${sel.options[sel.selectedIndex]?.text || ''}`, "info", 2000);
 }
@@ -1916,7 +3628,7 @@ async function submitMessage() {
     await loadSessionsList();
 
   } catch (err) {
-    document.getElementById(`body-${msgId}`).innerHTML = `<span style="color:#f87171; font-weight:700;">Error: ${escapeHtml(err.message || err)}</span>`;
+    document.getElementById(`body-${msgId}`).innerHTML = `<span style="color:var(--rose); font-weight:700;">Error: ${escapeHtml(err.message || err)}</span>`;
   } finally {
     btn.disabled = false;
     setPollingSpeed(false);
@@ -1943,11 +3655,11 @@ function renderCboPlanHtml(plan, msgId) {
       <div class="cbo-dag-node">
         <div style="display:flex; align-items:center; gap:8px;">
           <span class="cbo-op-tag ${opClass}">${escapeHtml(n.operator)}</span>
-          <span style="font-weight:700; color:#ffffff;">${escapeHtml(n.name)}</span>
+          <span style="font-weight:700; color:var(--text-bright);">${escapeHtml(n.name)}</span>
           <span style="color:var(--text-muted); font-size:11px;">(${escapeHtml(n.assigned_agent)})</span>
         </div>
         <div style="display:flex; align-items:center; gap:10px;">
-          <span style="color:#94a3b8; font-size:11px;">${escapeHtml(n.slot)}</span>
+          <span style="color:var(--text-muted); font-size:11px;">${escapeHtml(n.slot)}</span>
           <span style="color:var(--accent); font-weight:700;">${n.estimated_cost_ms}ms</span>
         </div>
       </div>
@@ -1969,11 +3681,11 @@ function renderCboPlanHtml(plan, msgId) {
           <div class="cbo-metric-tag">Critical Path: <b>${Math.round(plan.critical_path_cost_ms)}ms</b></div>
           <div class="cbo-metric-tag">Est. Tokens: <b>${plan.total_estimated_tokens}</b></div>
         </div>
-        <div style="font-size:12px; color:#cbd5e1; font-style:italic;">
+        <div style="font-size:12px; color:var(--text); font-style:italic;">
           Rationale: ${escapeHtml(plan.strategy_rationale || '')}
         </div>
         <div class="cbo-dag-list">
-          <div style="font-weight:800; color:#93c5fd; font-size:11px; margin-bottom:2px;">OPTIMIZED EXECUTION DAG:</div>
+          <div style="font-weight:700; color:var(--accent); font-size:11px; margin-bottom:2px;">OPTIMIZED EXECUTION DAG:</div>
           ${nodesHtml}
         </div>
       </div>
@@ -2052,7 +3764,7 @@ async function loadRulesData() {
     if (projContainer) {
       if (data.project_rules && data.project_rules.has_rules) {
         projContainer.innerHTML = `
-          <div style="font-weight:800; color:var(--accent); margin-bottom:8px;">
+          <div style="font-weight:700; color:var(--accent); margin-bottom:8px;">
             ✓ Active Rules File: <code>${escapeHtml(data.project_rules.source)}</code>
           </div>
           ${parseMarkdown(data.project_rules.content)}
@@ -2112,19 +3824,19 @@ async function loadBackendsStatus() {
     Object.values(backends).forEach(b => {
       const card = document.createElement('div');
       const isOnline = (b.status === 'ready' || b.status === 'online');
-      card.style.cssText = `background:#0b1120; border:1.5px solid ${isOnline ? '#22c55e' : '#334155'}; border-radius:10px; padding:10px 12px; display:flex; flex-direction:column; gap:4px;`;
+      card.style.cssText = `background:var(--ink-800); border:1.5px solid ${isOnline ? 'var(--green-strong)' : 'var(--line-strong)'}; border-radius:10px; padding:10px 12px; display:flex; flex-direction:column; gap:4px;`;
       
       card.innerHTML = `
         <div style="display:flex; justify-content:space-between; align-items:center;">
-          <span style="font-weight:800; color:#ffffff; font-size:12.5px;">${escapeHtml(b.name)}</span>
+          <span style="font-weight:700; color:var(--text-bright); font-size:12.5px;">${escapeHtml(b.name)}</span>
           <span class="status-badge ${isOnline ? 'badge-online' : 'badge-idle'}" id="status-badge-${b.id}" style="font-size:9.5px; padding:2px 6px;">${escapeHtml(b.status.toUpperCase())}</span>
         </div>
-        <div style="font-size:10.5px; color:#94a3b8; font-weight:700;">${escapeHtml(b.role)}</div>
-        <div style="font-family:monospace; font-size:11px; color:var(--accent); background:#070a12; padding:3px 6px; border-radius:4px; border:1px solid #1e293b; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">
+        <div style="font-size:10.5px; color:var(--text-muted); font-weight:700;">${escapeHtml(b.role)}</div>
+        <div style="font-family:var(--font-mono); font-size:11px; color:var(--accent); background:var(--ink-900); padding:3px 6px; border-radius:4px; border:1px solid var(--ink-500); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">
           🏷️ ${escapeHtml(b.version)}
         </div>
         <div style="display:flex; justify-content:flex-end; margin-top:4px;">
-          <button class="action-btn" onclick="testSingleBackend('${escapeJs(b.id)}')" style="font-size:10px; padding:2px 6px;">
+          <button class="action-btn action-btn--sm" onclick="testSingleBackend('${escapeJs(b.id)}')">
             ⚡ Test Ping
           </button>
         </div>
@@ -2160,5 +3872,492 @@ async function testAllEnginesDiagnostic() {
     await testSingleBackend(id);
   }
 }
+
+// ─────────────────────────────────────────────────────────────
+// UNIVERSAL CONTRACTS & DOCUSAURUS ENGINE CONTROLLER
+// ─────────────────────────────────────────────────────────────
+
+let activeContractsCatalog = null;
+let currentContractsCategory = 'all';
+
+async function loadContractsCatalog() {
+  const container = document.getElementById('contractsCatalogContainer');
+  if (!container) return;
+
+  container.innerHTML = `
+    <div style="text-align:center; padding:30px; color:var(--text-muted);">
+      <div style="font-size:24px; margin-bottom:8px;">🔍</div>
+      <div>Scanning repository for OpenAPI, FlatBuffers, SCXML statecharts, and CEL invariants...</div>
+    </div>
+  `;
+
+  try {
+    const res = await fetch(`/api/contracts/catalog?repo_path=${encodeURIComponent(currentRepoPath)}`, { cache: 'no-store' });
+    const catalog = await res.json();
+    activeContractsCatalog = catalog;
+
+    const summary = catalog.summary || {};
+    const openapiCount = catalog.openapi ? catalog.openapi.reduce((acc, s) => acc + (s.endpoint_count || s.endpoints?.length || 0), 0) : 0;
+    const asyncapiCount = catalog.asyncapi ? catalog.asyncapi.reduce((acc, s) => acc + (s.channel_count || s.channels?.length || 0), 0) : 0;
+    const fbCount = catalog.flatbuffers ? catalog.flatbuffers.reduce((acc, s) => acc + (s.tables?.length || 0), 0) : 0;
+    const protoCount = catalog.protobuf ? catalog.protobuf.reduce((acc, s) => acc + (s.messages?.length || 0), 0) : 0;
+    const scxmlCount = summary.statecharts_count || (catalog.statecharts?.length || 0);
+    const celCount = summary.cel_invariants_count || (catalog.cel_invariants?.length || 0);
+
+    const elO = document.getElementById('metricOpenApiCount');
+    if (elO) elO.innerText = openapiCount;
+    const elA = document.getElementById('metricAsyncApiCount');
+    if (elA) elA.innerText = asyncapiCount;
+    const elF = document.getElementById('metricFlatBuffersCount');
+    if (elF) elF.innerText = fbCount;
+    const elP = document.getElementById('metricProtobufCount');
+    if (elP) elP.innerText = protoCount;
+    const elS = document.getElementById('metricStatechartsCount');
+    if (elS) elS.innerText = scxmlCount;
+    const elC = document.getElementById('metricCelCount');
+    if (elC) elC.innerText = celCount;
+
+    renderContractsCatalog(catalog);
+  } catch (e) {
+    container.innerHTML = `
+      <div style="background:var(--ink-600); border:1.5px solid var(--rose-strong); border-radius:8px; padding:20px; color:var(--rose);">
+        <div style="font-weight:700; font-size:14px; margin-bottom:6px;">⚠️ Error loading contracts catalog</div>
+        <div style="font-size:12.5px;">${escapeHtml(e.message)}</div>
+      </div>
+    `;
+  }
+}
+
+function renderContractsCatalog(catalog) {
+  const container = document.getElementById('contractsCatalogContainer');
+  if (!container) return;
+  container.innerHTML = '';
+
+  const total = catalog.total_contracts || 0;
+  const celInvariants = catalog.cel_invariants || [];
+  
+  if (total === 0 && celInvariants.length === 0) {
+    container.innerHTML = `
+      <div style="text-align:center; padding:40px 20px; background:var(--ink-800); border:1px solid var(--ink-500); border-radius:10px;">
+        <div style="font-size:28px; margin-bottom:8px;">📜</div>
+        <div style="font-size:15px; font-weight:700; color:var(--text-bright); margin-bottom:6px;">No Contract Specifications Detected in Repository</div>
+        <div style="font-size:12.5px; color:var(--text-muted); max-width:600px; margin:0 auto 16px auto;">
+          Add OpenAPI (<code>openapi.yaml</code> / <code>*.openapi.json</code>), FlatBuffers (<code>*.fbs</code>), Protobuf (<code>*.proto</code>), SCXML state machines (<code>*.scxml</code>), or CEL invariants (<code>invariants.yaml</code>) to your project.
+        </div>
+        <button class="action-btn action-btn--primary" onclick="exportContractsToDocusaurusAction()">
+          📚 Initialize Docusaurus Docs Structure
+        </button>
+      </div>
+    `;
+    return;
+  }
+
+  // 1. OpenAPI Specs
+  if (catalog.openapi && catalog.openapi.length > 0) {
+    catalog.openapi.forEach((spec) => {
+      const card = document.createElement('div');
+      card.className = 'contract-spec-card';
+      card.dataset.category = 'openapi';
+      card.style.background = 'var(--ink-800)';
+      card.style.border = '1.5px solid var(--ink-500)';
+      card.style.borderRadius = '10px';
+      card.style.padding = '16px';
+      card.style.display = 'flex';
+      card.style.flexDirection = 'column';
+      card.style.gap = '12px';
+
+      let endpointsHtml = '';
+      (spec.endpoints || []).forEach(ep => {
+        const methodColors = {
+          GET: 'var(--accent)',
+          POST: 'var(--green)',
+          PUT: 'var(--amber)',
+          DELETE: 'var(--rose)',
+          PATCH: 'var(--purple)'
+        };
+        const color = methodColors[ep.method] || 'var(--text-muted)';
+        endpointsHtml += `
+          <div style="display:flex; justify-content:space-between; align-items:center; background:var(--ink-900); border:1px solid var(--line); border-radius:6px; padding:6px 12px; font-size:12px;">
+            <div style="display:flex; align-items:center; gap:10px;">
+              <span style="font-family:var(--font-mono); font-weight:700; color:${color}; font-size:11px; background:rgba(255,255,255,0.06); padding:2px 6px; border-radius:4px;">${escapeHtml(ep.method)}</span>
+              <span style="font-family:var(--font-mono); font-weight:700; color:var(--text-bright);">${escapeHtml(ep.path)}</span>
+            </div>
+            <span style="color:var(--text-muted); font-size:11.5px;">${escapeHtml(ep.summary || ep.operation_id || '')}</span>
+          </div>
+        `;
+      });
+
+      card.innerHTML = `
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+          <div style="display:flex; align-items:center; gap:8px;">
+            <span style="font-size:16px;">📜</span>
+            <span style="font-weight:700; color:var(--text-bright); font-size:14px;">${escapeHtml(spec.title || 'OpenAPI Specification')}</span>
+            <span class="file-status-badge status-a">OpenAPI v${escapeHtml(spec.spec_version || '3.0')}</span>
+          </div>
+          <span style="font-size:11.5px; color:var(--text-muted); font-family:var(--font-mono);">${escapeHtml(spec.filepath || '')}</span>
+        </div>
+        <div style="font-size:12px; color:var(--text);">${escapeHtml(spec.description || 'RESTful API contract endpoints & schemas.')}</div>
+        <div style="display:flex; flex-direction:column; gap:6px;">
+          ${endpointsHtml}
+        </div>
+      `;
+      container.appendChild(card);
+    });
+  }
+
+  // 2. AsyncAPI Specs
+  if (catalog.asyncapi && catalog.asyncapi.length > 0) {
+    catalog.asyncapi.forEach((spec) => {
+      const card = document.createElement('div');
+      card.className = 'contract-spec-card';
+      card.dataset.category = 'asyncapi';
+      card.style.background = 'var(--ink-800)';
+      card.style.border = '1.5px solid var(--ink-500)';
+      card.style.borderRadius = '10px';
+      card.style.padding = '16px';
+      card.style.display = 'flex';
+      card.style.flexDirection = 'column';
+      card.style.gap = '12px';
+
+      let channelsHtml = '';
+      (spec.channels || []).forEach(ch => {
+        channelsHtml += `
+          <div style="display:flex; justify-content:space-between; align-items:center; background:var(--ink-900); border:1px solid var(--line); border-radius:6px; padding:6px 12px; font-size:12px;">
+            <div style="display:flex; align-items:center; gap:8px;">
+              <span style="font-family:var(--font-mono); font-weight:700; color:var(--accent); font-size:11px;">CHANNEL</span>
+              <span style="font-family:var(--font-mono); font-weight:700; color:var(--text-bright);">${escapeHtml(ch.name)}</span>
+              <span style="color:var(--text-muted); font-size:11px;">(${escapeHtml(ch.address || '')})</span>
+            </div>
+            <span style="color:var(--purple); font-size:11.5px; font-weight:700;">${(ch.messages || []).length} Message(s)</span>
+          </div>
+        `;
+      });
+
+      card.innerHTML = `
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+          <div style="display:flex; align-items:center; gap:8px;">
+            <span style="font-size:16px;">📡</span>
+            <span style="font-weight:700; color:var(--text-bright); font-size:14px;">${escapeHtml(spec.title || 'AsyncAPI Specification')}</span>
+            <span class="file-status-badge status-m">AsyncAPI v${escapeHtml(spec.spec_version || '3.0')}</span>
+          </div>
+          <span style="font-size:11.5px; color:var(--text-muted); font-family:var(--font-mono);">${escapeHtml(spec.filepath || '')}</span>
+        </div>
+        <div style="font-size:12px; color:var(--text);">${escapeHtml(spec.description || 'Event-driven message channels and payload contracts.')}</div>
+        <div style="display:flex; flex-direction:column; gap:6px;">
+          ${channelsHtml}
+        </div>
+      `;
+      container.appendChild(card);
+    });
+  }
+
+  // 3. FlatBuffers Schemas
+  if (catalog.flatbuffers && catalog.flatbuffers.length > 0) {
+    catalog.flatbuffers.forEach((spec) => {
+      const card = document.createElement('div');
+      card.className = 'contract-spec-card';
+      card.dataset.category = 'flatbuffers';
+      card.style.background = 'var(--ink-800)';
+      card.style.border = '1.5px solid var(--ink-500)';
+      card.style.borderRadius = '10px';
+      card.style.padding = '16px';
+      card.style.display = 'flex';
+      card.style.flexDirection = 'column';
+      card.style.gap = '12px';
+
+      let tablesHtml = '';
+      (spec.tables || []).forEach(tbl => {
+        const fieldsList = (tbl.fields || []).map(f => `${f.name}:${f.type}${f.required ? '!' : ''}`).join(', ');
+        tablesHtml += `
+          <div style="background:var(--ink-900); border:1px solid var(--line); border-radius:6px; padding:8px 12px; font-size:12px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+              <span style="font-weight:700; color:var(--amber); font-family:var(--font-mono);">table ${escapeHtml(tbl.name)} ${tbl.is_root ? '<span class="file-status-badge status-a">ROOT</span>' : ''}</span>
+              <span style="color:var(--text-muted); font-size:11px;">${(tbl.fields || []).length} fields</span>
+            </div>
+            <div style="font-family:var(--font-mono); font-size:11.5px; color:var(--text);">${escapeHtml(fieldsList)}</div>
+          </div>
+        `;
+      });
+
+      card.innerHTML = `
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+          <div style="display:flex; align-items:center; gap:8px;">
+            <span style="font-size:16px;">⚡</span>
+            <span style="font-weight:700; color:var(--text-bright); font-size:14px;">${escapeHtml(spec.title || 'FlatBuffers Schema')}</span>
+            <span class="file-status-badge status-u">FlatBuffers (.fbs)</span>
+          </div>
+          <span style="font-size:11.5px; color:var(--text-muted); font-family:var(--font-mono);">${escapeHtml(spec.filepath || '')}</span>
+        </div>
+        <div style="display:flex; flex-direction:column; gap:6px;">
+          ${tablesHtml}
+        </div>
+      `;
+      container.appendChild(card);
+    });
+  }
+
+  // 4. Protobuf Schemas
+  if (catalog.protobuf && catalog.protobuf.length > 0) {
+    catalog.protobuf.forEach((spec) => {
+      const card = document.createElement('div');
+      card.className = 'contract-spec-card';
+      card.dataset.category = 'protobuf';
+      card.style.background = 'var(--ink-800)';
+      card.style.border = '1.5px solid var(--ink-500)';
+      card.style.borderRadius = '10px';
+      card.style.padding = '16px';
+      card.style.display = 'flex';
+      card.style.flexDirection = 'column';
+      card.style.gap = '12px';
+
+      let msgHtml = '';
+      (spec.messages || []).forEach(m => {
+        msgHtml += `
+          <div style="display:flex; justify-content:space-between; align-items:center; background:var(--ink-900); border:1px solid var(--line); border-radius:6px; padding:6px 12px; font-size:12px;">
+            <span style="font-family:var(--font-mono); font-weight:700; color:var(--purple);">message ${escapeHtml(m.name)}</span>
+            <span style="color:var(--text-muted); font-size:11.5px;">${(m.fields || []).length} field(s)</span>
+          </div>
+        `;
+      });
+
+      card.innerHTML = `
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+          <div style="display:flex; align-items:center; gap:8px;">
+            <span style="font-size:16px;">📦</span>
+            <span style="font-weight:700; color:var(--text-bright); font-size:14px;">${escapeHtml(spec.title || 'Protobuf Schema')}</span>
+            <span class="file-status-badge status-m">${escapeHtml(spec.syntax || 'proto3')}</span>
+          </div>
+          <span style="font-size:11.5px; color:var(--text-muted); font-family:var(--font-mono);">${escapeHtml(spec.filepath || '')}</span>
+        </div>
+        <div style="display:flex; flex-direction:column; gap:6px;">
+          ${msgHtml}
+        </div>
+      `;
+      container.appendChild(card);
+    });
+  }
+
+  // 5. SCXML Statecharts with Mermaid Diagrams
+  if (catalog.statecharts && catalog.statecharts.length > 0) {
+    catalog.statecharts.forEach((sc) => {
+      const card = document.createElement('div');
+      card.className = 'contract-spec-card';
+      card.dataset.category = 'statecharts';
+      card.style.background = 'var(--ink-800)';
+      card.style.border = '1.5px solid var(--ink-500)';
+      card.style.borderRadius = '10px';
+      card.style.padding = '16px';
+      card.style.display = 'flex';
+      card.style.flexDirection = 'column';
+      card.style.gap = '12px';
+
+      let transRows = '';
+      (sc.transitions || []).forEach(tr => {
+        transRows += `
+          <tr style="border-bottom:1px solid var(--line);">
+            <td style="padding:6px 12px; font-family:var(--font-mono); color:var(--accent); font-weight:700;">${escapeHtml(tr.source)}</td>
+            <td style="padding:6px 12px; font-family:var(--font-mono); color:var(--green); font-weight:700;">${escapeHtml(tr.target)}</td>
+            <td style="padding:6px 12px; font-family:var(--font-mono); color:var(--amber);">${escapeHtml(tr.event || '*')}</td>
+            <td style="padding:6px 12px; font-family:var(--font-mono); color:var(--text);">${escapeHtml(tr.condition || '—')}</td>
+          </tr>
+        `;
+      });
+
+      card.innerHTML = `
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+          <div style="display:flex; align-items:center; gap:8px;">
+            <span style="font-size:16px;">🔄</span>
+            <span style="font-weight:700; color:var(--text-bright); font-size:14px;">${escapeHtml(sc.name || 'State Machine')}</span>
+            <span class="file-status-badge status-a">Initial: ${escapeHtml(sc.initial_state || 'None')}</span>
+          </div>
+          <span style="font-size:11.5px; color:var(--text-muted); font-family:var(--font-mono);">${escapeHtml(sc.filepath || '')}</span>
+        </div>
+
+        <div>
+          <div style="font-size:11.5px; color:var(--text-muted); font-weight:700; margin-bottom:6px;">📊 Docusaurus-Compatible Mermaid State Diagram:</div>
+          <pre style="background:var(--ink-900); border:1px solid var(--line); border-radius:8px; padding:12px; color:var(--accent); font-family:var(--font-mono); font-size:12px; overflow-x:auto; line-height:1.4;"><code>${escapeHtml(sc.mermaid || '')}</code></pre>
+        </div>
+
+        <div>
+          <div style="font-size:11.5px; color:var(--text-muted); font-weight:700; margin-bottom:6px;">🔄 State Transition Invariants:</div>
+          <table style="width:100%; border-collapse:collapse; background:var(--ink-900); border:1px solid var(--line); border-radius:8px; font-size:11.5px;">
+            <thead>
+              <tr style="background:var(--ink-900); border-bottom:1px solid var(--line); color:var(--text-muted); text-align:left;">
+                <th style="padding:6px 12px;">Source</th>
+                <th style="padding:6px 12px;">Target</th>
+                <th style="padding:6px 12px;">Event</th>
+                <th style="padding:6px 12px;">Guard Condition</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${transRows}
+            </tbody>
+          </table>
+        </div>
+      `;
+      container.appendChild(card);
+    });
+  }
+
+  // 6. CEL Invariant Rules
+  if (catalog.cel_invariants && catalog.cel_invariants.length > 0) {
+    const card = document.createElement('div');
+    card.className = 'contract-spec-card';
+    card.dataset.category = 'cel';
+    card.style.background = 'var(--ink-800)';
+    card.style.border = '1.5px solid var(--ink-500)';
+    card.style.borderRadius = '10px';
+    card.style.padding = '16px';
+    card.style.display = 'flex';
+    card.style.flexDirection = 'column';
+    card.style.gap = '12px';
+
+    let rulesRows = '';
+    catalog.cel_invariants.forEach(inv => {
+      const sevColors = {
+        CRITICAL: 'var(--rose)',
+        ERROR: 'var(--rose)',
+        WARN: 'var(--amber)',
+        INFO: 'var(--accent)'
+      };
+      const sevColor = sevColors[inv.severity] || 'var(--rose)';
+      rulesRows += `
+        <tr style="border-bottom:1px solid var(--line);">
+          <td style="padding:8px 12px;"><span style="font-family:var(--font-mono); font-weight:700; font-size:10.5px; color:${sevColor}; background:rgba(255,255,255,0.06); padding:2px 6px; border-radius:4px;">${escapeHtml(inv.severity || 'ERROR')}</span></td>
+          <td style="padding:8px 12px; font-weight:700; color:var(--text-bright);">${escapeHtml(inv.name)}</td>
+          <td style="padding:8px 12px; font-family:var(--font-mono); color:var(--accent);">${escapeHtml(inv.target || 'global')}</td>
+          <td style="padding:8px 12px; font-family:var(--font-mono); color:var(--green);"><code>${escapeHtml(inv.rule)}</code></td>
+          <td style="padding:8px 12px; color:var(--text);">${escapeHtml(inv.description || '')}</td>
+        </tr>
+      `;
+    });
+
+    card.innerHTML = `
+      <div style="display:flex; justify-content:space-between; align-items:center;">
+        <div style="display:flex; align-items:center; gap:8px;">
+          <span style="font-size:16px;">🛡️</span>
+          <span style="font-weight:700; color:var(--text-bright); font-size:14px;">CEL (Common Expression Language) Invariants</span>
+          <span class="file-status-badge status-a">${catalog.cel_invariants.length} Rule(s)</span>
+        </div>
+      </div>
+
+      <table style="width:100%; border-collapse:collapse; background:var(--ink-900); border:1px solid var(--line); border-radius:8px; font-size:12px;">
+        <thead>
+          <tr style="background:var(--ink-900); border-bottom:1px solid var(--line); color:var(--text-muted); text-align:left;">
+            <th style="padding:8px 12px;">Severity</th>
+            <th style="padding:8px 12px;">Rule Name</th>
+            <th style="padding:8px 12px;">Target Scope</th>
+            <th style="padding:8px 12px;">CEL Expression</th>
+            <th style="padding:8px 12px;">Description</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${rulesRows}
+        </tbody>
+      </table>
+    `;
+    container.appendChild(card);
+  }
+
+  filterContractsCategory(currentContractsCategory);
+}
+
+function filterContractsCategory(cat) {
+  currentContractsCategory = cat;
+  const pills = document.querySelectorAll('#contractsCategoryPills .action-btn');
+  pills.forEach(p => {
+    p.className = (p.dataset.cat === cat) ? 'action-btn active' : 'action-btn';
+  });
+
+  const cards = document.querySelectorAll('.contract-spec-card');
+  cards.forEach(card => {
+    if (cat === 'all' || card.dataset.category === cat) {
+      card.style.display = 'flex';
+    } else {
+      card.style.display = 'none';
+    }
+  });
+}
+
+function searchContracts(query) {
+  const q = (query || '').toLowerCase().trim();
+  const cards = document.querySelectorAll('.contract-spec-card');
+  cards.forEach(card => {
+    const text = card.innerText.toLowerCase();
+    const matchesCat = (currentContractsCategory === 'all' || card.dataset.category === currentContractsCategory);
+    if (matchesCat && (!q || text.includes(q))) {
+      card.style.display = 'flex';
+    } else {
+      card.style.display = 'none';
+    }
+  });
+}
+
+async function exportContractsToDocusaurusAction() {
+  showToast("Compiling contracts to Docusaurus markdown hierarchy...", "info", 2000);
+  try {
+    const res = await fetch('/api/contracts/export_docusaurus', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ repo_path: currentRepoPath })
+    });
+    const data = await res.json();
+    if (data.success) {
+      showToast(`✓ Exported ${data.exported_files_count} Docusaurus docs to ${data.contracts_dir}!`, "success", 4000);
+    } else {
+      showToast(`⚠️ Docusaurus export error: ${data.error || 'Failed'}`, "warn", 3500);
+    }
+  } catch (e) {
+    showToast(`Export error: ${e.message}`, "error");
+  }
+}
+
+async function executeCelLiveTest() {
+  const expr = document.getElementById('celTestExprInput')?.value.trim();
+  const rawContext = document.getElementById('celTestContextInput')?.value.trim();
+  const badge = document.getElementById('celLiveVerdictBadge');
+
+  if (!expr) {
+    showToast("Please enter a CEL expression to test", "warn");
+    return;
+  }
+
+  let context = {};
+  try {
+    context = JSON.parse(rawContext || "{}");
+  } catch (e) {
+    showToast(`Invalid JSON Context: ${e.message}`, "error");
+    return;
+  }
+
+  try {
+    const res = await fetch('/api/contracts/validate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        invariants: [{ name: "interactive_test_rule", rule: expr }],
+        context: context
+      })
+    });
+    const data = await res.json();
+    if (data.valid) {
+      if (badge) {
+        badge.className = 'file-status-badge status-a';
+        badge.innerText = 'PASSED (TRUE)';
+      }
+      showToast("✓ CEL Expression Evaluated to TRUE (Valid)", "success", 2500);
+    } else {
+      if (badge) {
+        badge.className = 'file-status-badge status-d';
+        badge.innerText = 'FAILED (FALSE)';
+      }
+      const failInfo = data.results && data.results[0] ? data.results[0].error : "Rule evaluated to false";
+      showToast(`⚠️ CEL Rule Failed: ${failInfo}`, "warn", 3500);
+    }
+  } catch (e) {
+    showToast(`CEL Validation error: ${e.message}`, "error");
+  }
+}
+
 
 

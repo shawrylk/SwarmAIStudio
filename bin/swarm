@@ -1,0 +1,21 @@
+#!/usr/bin/env python3
+"""
+Swarm AI Studio unified launcher.
+
+Runs the `swarm` CLI directly from a source checkout (no install needed):
+
+    ./bin/swarm web --port 8080
+    ./bin/swarm            # same as `web`
+"""
+
+import sys
+from pathlib import Path
+
+# Make the project importable when run from a checkout.
+pkg_root = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(pkg_root))
+
+from swarm.cli import main
+
+if __name__ == "__main__":
+    main()

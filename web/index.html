@@ -3,6 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="color-scheme" content="dark">
   <title>Swarm AI Studio · Autonomous Loop Agent & GitHub Desktop</title>
   <link rel="stylesheet" href="/css/style.css">
 </head>
@@ -10,83 +11,92 @@
 
   <!-- OFFLINE NOTIFICATION BANNER (Triggered when server is killed / disconnected) -->
   <div id="serverOfflineBanner" class="offline-banner">
-    <span>⚠️ Swarm Backend Server Disconnected / Killed — Attempting reconnection to backend...</span>
+    <span>⚠️ Swarm backend disconnected — attempting to reconnect…</span>
   </div>
 
   <!-- TOAST NOTIFICATION CONTAINER -->
   <div id="toastContainer" class="toast-container"></div>
 
   <header>
-    <div class="brand">
-      <span class="brand-icon">🌌</span>
-      <div>
+    <div class="header-left">
+      <button class="action-btn mobile-sidebar-toggle" id="mobileChatSidebarToggle" onclick="toggleMobileChatSidebar()" title="Toggle chat sessions">
+        💬
+      </button>
+      <div class="brand">
+        <span class="brand-icon">🌌</span>
         <h1>Swarm AI Studio</h1>
       </div>
     </div>
 
-    <div class="tab-bar">
-      <button class="tab-btn active" id="tabChatBtn" onclick="switchTab('chat')">💬 AI Advisor</button>
-      <button class="tab-btn" id="tabLoopBtn" onclick="switchTab('loop')">🔄 Auto-Loop Agent</button>
-      <button class="tab-btn" id="tabGitBtn" onclick="switchTab('git')">🌿 GitHub Desktop</button>
-      <button class="tab-btn" id="tabTopoBtn" onclick="switchTab('topo')">🕸️ Swarm Topology</button>
-      <button class="tab-btn" id="tabVaultBtn" onclick="switchTab('vault')">📁 Artifacts</button>
-    </div>
-
     <div class="header-center">
-      <span style="font-size:12px; color:#cbd5e1; font-weight:700;">Repo:</span>
-      <select id="repoSelect" class="repo-select" onchange="onRepoChanged()">
-        <option value="">Discovering projects...</option>
+      <span class="header-label">Repo</span>
+      <select id="repoSelect" class="repo-select" onchange="onRepoChanged()" title="Active repository">
+        <option value="">Discovering projects…</option>
       </select>
-      <button class="action-btn" onclick="openRulesModal()" style="border-color:#a855f7; color:#c084fc; font-weight:700; font-size:11.5px; padding:4px 10px;">
-        📜 Architecture Rules
+      <button class="action-btn action-btn--purple" onclick="openRulesModal()" title="Clean Architecture &amp; Swarm quality rules">
+        📜 Rules
       </button>
     </div>
 
+    <nav class="tab-bar" id="mainTabBar">
+      <button class="tab-btn active" id="tabChatBtn" onclick="switchTab('chat')">💬 AI Advisor</button>
+      <button class="tab-btn" id="tabLoopBtn" onclick="switchTab('loop')">🔄 Auto-Loop</button>
+      <button class="tab-btn" id="tabGitBtn" onclick="switchTab('git')">🌿 Git Desktop</button>
+      <button class="tab-btn" id="tabContractsBtn" onclick="switchTab('contracts')">📜 Contracts</button>
+      <button class="tab-btn" id="tabTopoBtn" onclick="switchTab('topo')">🕸️ Topology</button>
+      <button class="tab-btn" id="tabVaultBtn" onclick="switchTab('vault')">📁 Artifacts</button>
+    </nav>
+
     <div class="telemetry-pills">
-      <div class="pill">
+      <div class="pill" title="Backend connection & VRAM">
         <span class="dot" id="serverStatusDot"></span>
         <span id="vramVal">VRAM: 0/16GB</span>
       </div>
-      <div class="pill">
-        <span id="gpuVal">GPU: 0%</span>
+      <div class="pill"><span id="gpuVal">GPU: 0%</span></div>
+      <div class="pill"><span id="ramVal">RAM: 0/30GB</span></div>
+      <div class="pill" id="activeAgentsPill" title="Active sub-agents across GPU batching slots">
+        <span id="activeAgentsVal">0 / 8 Active</span>
       </div>
-      <div class="pill">
-        <span id="ramVal">RAM: 0/30GB</span>
-      </div>
-      <div class="pill">
-        <span id="modelVal" style="color:var(--accent);">LFM 2.5: 8 SLOTS READY</span>
-      </div>
+      <div class="pill"><span id="modelVal">LFM 2.5: 8 slots ready</span></div>
     </div>
   </header>
 
   <div class="main-body">
 
     <!-- LEFT SIDEBAR: MULTI-CHAT SESSIONS -->
-    <div class="chat-sidebar" id="chatSidebar">
+    <aside class="chat-sidebar" id="chatSidebar">
       <div class="sidebar-header">
-        <button class="new-chat-btn" onclick="startNewChat()">➕ New Chat Session</button>
+        <button class="new-chat-btn" onclick="startNewChat()">➕ New chat session</button>
       </div>
       <div class="session-list" id="sessionListContainer">
         <!-- Sessions rendered dynamically -->
       </div>
-    </div>
+    </aside>
 
-    <!-- TAB 1: AI ADVISOR CHAT -->
+    <!-- Mobile Overlay Backdrop for Chat Sidebar -->
+    <div class="chat-sidebar-backdrop" id="chatSidebarBackdrop" onclick="toggleMobileChatSidebar(false)"></div>
+
+    <!-- Chat Sidebar Draggable Resizer -->
+    <div class="resizer-col" id="chatSidebarResizer" data-resizer="chatSidebar" title="Drag to resize sidebar, double-click to reset"></div>
+
+    <!-- ══════════════════════════════════════════════════════════════
+         TAB 1: AI ADVISOR CHAT
+         ══════════════════════════════════════════════════════════════ -->
     <div class="tab-content active" id="tabChat">
       <div class="chat-container" id="chatContainer">
         <div class="msg-row" id="welcomeMsgRow">
           <div class="msg-assistant">
             <div class="msg-header">
-              <div class="msg-author">🤖 Direct Lead Advisor (Auto-Dev Swarm & GitHub Desktop)</div>
-              <span style="font-size:12px; color:var(--green); font-weight:700;" id="sessionStatusBadge">Ready</span>
+              <div class="msg-author">🤖 Lead Advisor</div>
+              <span class="status-badge badge-online" id="sessionStatusBadge">Ready</span>
             </div>
             <div class="markdown-body">
-              <p>Welcome to <b>Swarm AI Studio</b>:</p>
+              <p>Welcome to <b>Swarm AI Studio</b>.</p>
               <ul>
-                <li><b>🔄 Autonomous Loop Agent:</b> Click the <b>"🔄 Auto-Loop Agent"</b> tab to run end-to-end continuous autonomous feature development with PM/Dev/QA/Review roles and real-time Lead Advisor escalation pings.</li>
-                <li><b>🌿 Complete GitHub Desktop Suite:</b> Inspect diffs, stage files, commit, push, switch/create branches, stash local changes, and manage worktrees.</li>
-                <li><b>📦 Stash Local Changes:</b> Seamless "Stash & Switch" branch workflow without conflict errors.</li>
-                <li><b>💬 Multi-Chat Persistence:</b> Independent session histories saved across page reloads.</li>
+                <li><b>Auto-Loop</b> — continuous autonomous feature development with PM / Dev / QA / Review roles and live Lead Advisor escalation.</li>
+                <li><b>Git Desktop</b> — inspect diffs, stage, commit, push, switch branches, stash, and manage worktrees.</li>
+                <li><b>Contracts</b> — discover OpenAPI, AsyncAPI, Protobuf, FlatBuffers, statecharts and CEL invariants across the repo.</li>
+                <li><b>Multi-chat persistence</b> — independent session histories saved across reloads and LAN devices.</li>
               </ul>
             </div>
           </div>
@@ -96,15 +106,16 @@
       <div class="input-section">
         <div class="input-wrapper">
           <div class="quick-actions">
-            <button class="action-btn" onclick="sendQuickPrompt('Run a comprehensive security, performance, and architecture audit on this repository.')">🚀 Full Swarm Audit</button>
-            <button class="action-btn" onclick="sendQuickPrompt('Scan the repository files and locate all entrypoints and project manifests.')">🔍 Scout Files</button>
-            <button class="action-btn" onclick="sendQuickPrompt('Design an ultra-low latency caching layer with distributed locks.')">⚡ Design Blueprint</button>
-            <button class="action-btn" onclick="pasteFromClipboard()">📋 Paste Clipboard</button>
-            <button class="action-btn danger" onclick="confirmClearCurrentSession()">🗑️ Clear Current Chat</button>
+            <button class="action-btn action-btn--accent" onclick="transferAdvisorChatToLoop()" title="Synthesize this conversation and launch the Auto-Dev Loop">🚀 Transfer to Auto-Dev Loop</button>
+            <button class="action-btn" onclick="sendQuickPrompt('Run a comprehensive security, performance, and architecture audit on this repository.')">🛡️ Full swarm audit</button>
+            <button class="action-btn" onclick="sendQuickPrompt('Scan the repository files and locate all entrypoints and project manifests.')">🔍 Scout files</button>
+            <button class="action-btn" onclick="sendQuickPrompt('Design an ultra-low latency caching layer with distributed locks.')">⚡ Design blueprint</button>
+            <button class="action-btn" onclick="pasteFromClipboard()">📋 Paste clipboard</button>
+            <button class="action-btn danger" onclick="confirmClearCurrentSession()">🗑️ Clear chat</button>
           </div>
 
           <div class="input-row">
-            <textarea id="promptInput" placeholder="Ask anything, assign a task, or review code... (Use ↑ / ↓ arrow keys for history)" oninput="autoResize(this)"></textarea>
+            <textarea id="promptInput" placeholder="Ask anything, assign a task, or review code…  (↑ / ↓ for history)" oninput="autoResize(this)"></textarea>
             <button class="send-btn" id="sendBtn" onclick="submitMessage()">
               <span id="btnIcon">➔</span>
               <span id="btnText">Send</span>
@@ -114,191 +125,310 @@
       </div>
     </div>
 
-    <!-- TAB 2: AUTONOMOUS LOOP AGENT DASHBOARD -->
+    <!-- ══════════════════════════════════════════════════════════════
+         TAB 2: AUTONOMOUS LOOP AGENT DASHBOARD
+         ══════════════════════════════════════════════════════════════ -->
     <div class="tab-content" id="tabLoop">
       <div class="loop-dashboard">
-        
-        <!-- Loop Control Header -->
-        <div class="loop-control-card">
-          <div style="display:flex; justify-content:space-between; align-items:center;">
-            <div>
-              <div style="font-weight:800; color:#ffffff; font-size:16px; display:flex; align-items:center; gap:8px;">
-                <span>🔄 Autonomous Swarm Loop Agent</span>
-                <span class="status-badge badge-idle" id="loopStatusBadge">IDLE</span>
+
+        <!-- Loop Session Selector Bar -->
+        <div class="loop-session-bar">
+          <div class="loop-session-bar__group">
+            <span class="header-label">🔄 Loop run</span>
+            <select id="loopSessionSelect" class="repo-select" onchange="onLoopSessionChanged()">
+              <option value="">Loading loop runs…</option>
+            </select>
+            <button class="action-btn action-btn--accent" onclick="createNewLoopSessionUI()">➕ New run</button>
+          </div>
+          <div class="loop-session-bar__group">
+            <span class="linked-advisor-badge" id="loopLinkedAdvisorBadge" onclick="jumpToLinkedAdvisorSession()" title="Open the linked Advisor chat session">💬 Linked advisor chat ↗</span>
+            <button class="action-btn danger action-btn--sm" onclick="deleteCurrentLoopSessionUI()" title="Delete active loop session">🗑️ Delete run</button>
+          </div>
+        </div>
+
+        <!-- Resizable Split View: Left (Controls + Kanban) | Right (Telemetry + Consultations + Deliverable) -->
+        <div class="loop-split-container" id="loopSplitContainer">
+
+          <!-- Left Pane: Loop Control & Task Pipeline Kanban -->
+          <div class="loop-left-pane" id="loopLeftPane">
+
+            <div class="loop-control-card">
+              <div class="loop-control-head">
+                <div class="panel-bar__text">
+                  <div class="panel-bar__title">
+                    <span>🔄 Autonomous swarm loop</span>
+                    <span class="status-badge badge-idle" id="loopStatusBadge">IDLE</span>
+                  </div>
+                  <div class="panel-bar__sub">
+                    Decomposes a feature into PM, Dev, QA and Review tasks, runs them across local GPU slots, and escalates to the Lead Advisor.
+                  </div>
+                </div>
+
+                <div class="loop-control-actions">
+                  <button class="action-btn action-btn--success action-btn--lg" id="loopStartBtn" onclick="startAutonomousLoop()">▶️ Start loop</button>
+                  <button class="action-btn action-btn--warn action-btn--lg" id="loopResumeBtn" onclick="resumeAutonomousLoop()" style="display:none;">▶️ Resume</button>
+                  <button class="action-btn action-btn--warn action-btn--lg" id="loopPauseBtn" onclick="pauseAutonomousLoop()" style="display:none;">⏸️ Pause</button>
+                  <button class="action-btn action-btn--solid-danger action-btn--lg" id="loopStopBtn" onclick="stopAutonomousLoop()" style="display:none;">⏹️ Stop</button>
+                </div>
               </div>
-              <div style="font-size:12.5px; color:#cbd5e1; margin-top:2px;">
-                Decomposes features into PM, Dev, QA, Review tasks, executes continuously across local GPU slots, and pings Lead Advisor for smart unblocking.
+
+              <div class="loop-goal-field">
+                <textarea id="loopGoalInput" placeholder="Target feature or engineering goal to automate — e.g. “Implement Redis distributed caching with locks and invalidation, add QA unit tests, and run a security review”…"></textarea>
+
+                <div class="quick-actions">
+                  <span class="header-label">Templates</span>
+                  <button class="action-btn action-btn--sm" onclick="setLoopGoalPrompt('Implement Redis Distributed Caching with Lock &amp; Invalidation, add QA unit tests, and perform security review')">⚡ Redis caching</button>
+                  <button class="action-btn action-btn--sm" onclick="setLoopGoalPrompt('Build API Key Authentication Middleware with Rate Limiter &amp; Regression Tests')">🛡️ API key auth</button>
+                  <button class="action-btn action-btn--sm" onclick="setLoopGoalPrompt('Audit all database queries for N+1 problems and optimize indexes')">🔍 DB optimizer</button>
+                </div>
+              </div>
+
+              <!-- Active Sub-Agent Working Indicator (populated dynamically) -->
+              <div id="loopActiveAgentBox" class="loop-active-agent-box"></div>
+            </div>
+
+            <!-- Task Pipeline Kanban Grid -->
+            <div class="panel panel--well">
+              <div class="section-title">📋 Task pipeline · PM → Dev → QA → Review</div>
+              <div class="loop-pipeline-grid" id="loopTaskGrid">
+                <div class="empty-state">Awaiting a goal. Start the loop to decompose it into role-assigned tasks.</div>
               </div>
             </div>
 
-            <!-- Action Controls -->
-            <div style="display:flex; align-items:center; gap:8px;">
-              <button class="action-btn" id="loopStartBtn" onclick="startAutonomousLoop()" style="background:#16a34a; color:#ffffff; font-weight:800; border:none; padding:8px 16px; font-size:13px;">
-                ▶️ Start Autonomous Loop
-              </button>
-              <button class="action-btn" id="loopPauseBtn" onclick="pauseAutonomousLoop()" style="display:none; background:#d97706; color:#ffffff; font-weight:800; border:none; padding:8px 16px;">
-                ⏸️ Pause
-              </button>
-              <button class="action-btn danger" id="loopStopBtn" onclick="stopAutonomousLoop()" style="display:none; padding:8px 16px;">
-                ⏹️ Stop
-              </button>
+          </div>
+
+          <!-- Draggable Resizer between Loop Controls and Telemetry -->
+          <div class="resizer-col" id="loopSplitResizer" data-resizer="loop" title="Drag to resize, double-click to reset"></div>
+
+          <!-- Right Pane: Live Telemetry, Advisor Consultations, Final Summary -->
+          <div class="loop-right-pane" id="loopRightPane">
+
+            <div class="loop-telemetry-card" id="loopTelemetryCard">
+              <div class="loop-card-head">
+                <div class="section-title section-title--accent">
+                  <span>📡 Live execution stream</span>
+                  <span class="file-status-badge status-a" id="loopStreamLiveBadge">ACTIVE</span>
+                </div>
+                <button class="ghd-mini-btn" onclick="clearLoopLiveStream()" title="Clear stream log">Clear</button>
+              </div>
+              <div class="loop-live-stream" id="loopLiveLogStream">
+                <div class="empty-state--inline">Awaiting autonomous swarm execution events…</div>
+              </div>
             </div>
-          </div>
 
-          <!-- Goal Input -->
-          <div style="display:flex; flex-direction:column; gap:6px;">
-            <textarea id="loopGoalInput" placeholder="Enter target feature or engineering goal to automate (e.g. 'Implement Redis Distributed Caching with Lock & Invalidation, add QA unit tests, and perform security review')..." style="min-height:56px; font-size:13.5px;"></textarea>
-            
-            <!-- Goal Preset Templates -->
-            <div class="quick-actions" style="margin-top:2px;">
-              <span style="font-size:11.5px; color:var(--text-muted); font-weight:700;">Templates:</span>
-              <button class="action-btn" onclick="setLoopGoalPrompt('Implement Redis Distributed Caching with Lock & Invalidation, add QA unit tests, and perform security review')">⚡ Redis Caching</button>
-              <button class="action-btn" onclick="setLoopGoalPrompt('Build API Key Authentication Middleware with Rate Limiter & Regression Tests')">🛡️ API Key Auth</button>
-              <button class="action-btn" onclick="setLoopGoalPrompt('Audit all database queries for N+1 problems and optimize indexes')">🔍 DB Query Optimizer</button>
+            <div class="loop-telemetry-card">
+              <div class="loop-card-head">
+                <div class="section-title section-title--purple">
+                  <span>👑 Sub-agent → Lead Advisor consultations</span>
+                  <span class="file-status-badge status-u">LIVE</span>
+                </div>
+              </div>
+              <div id="loopAdvisorPingsContainer">
+                <div class="empty-state--inline">
+                  Sub-agents ping the Lead Advisor automatically whenever they hit a blocker or need architectural guidance.
+                </div>
+              </div>
             </div>
-          </div>
 
-          <!-- Active Sub-Agent Working Indicator -->
-          <div id="loopActiveAgentBox" style="display:none; background:#0b1222; border:1.5px solid var(--green); border-radius:8px; padding:10px 14px; animation:fadeIn 0.2s ease-in-out;">
-            <!-- Rendered dynamically -->
-          </div>
-        </div>
-
-        <!-- Task Pipeline Kanban Grid -->
-        <div>
-          <div style="font-weight:800; color:#ffffff; font-size:14.5px; margin-bottom:10px; display:flex; align-items:center; gap:8px;">
-            <span>📋 Decomposed Task Pipeline (PM ➔ Dev ➔ QA ➔ Review)</span>
-          </div>
-          <div class="loop-pipeline-grid" id="loopTaskGrid">
-            <div style="color:var(--text-muted); padding:20px; text-align:center; grid-column:1/-1;">
-              Awaiting goal input. Start the Autonomous Loop to decompose into sequential role-assigned tasks.
+            <div id="loopFinalSummaryContainer" class="loop-final-summary">
+              <div class="section-title section-title--accent">🎉 Completed deliverable &amp; sign-off</div>
+              <div id="loopFinalSummaryContent" class="markdown-body"></div>
             </div>
-          </div>
-        </div>
 
-        <!-- Smart Lead Advisor Escalation & Sub-Agent Pings -->
-        <div style="background:#0f172a; border:1.5px solid #334155; border-radius:12px; padding:16px;">
-          <div style="font-weight:800; color:#c084fc; font-size:14px; margin-bottom:8px; display:flex; align-items:center; gap:8px;">
-            <span>👑 Sub-Agent ➔ Lead Advisor Consultations (Smart Model Escalations)</span>
-            <span class="file-status-badge status-u">LIVE FEED</span>
           </div>
-          <div id="loopAdvisorPingsContainer">
-            <div style="color:var(--text-muted); font-size:12px; padding:8px;">
-              Sub-agents will automatically ping the Lead Advisor whenever they encounter blockers or require architectural guidance.
-            </div>
-          </div>
-        </div>
 
-        <!-- Final Synthesis & Deliverable View -->
-        <div id="loopFinalSummaryContainer" style="display:none; background:#0b1222; border:2px solid var(--accent); border-radius:12px; padding:16px;">
-          <div style="font-weight:800; color:var(--accent); font-size:15px; margin-bottom:8px;">
-            🎉 Feature Completed Deliverable & Sign-off
-          </div>
-          <div id="loopFinalSummaryContent" class="markdown-body" style="font-size:13.5px;"></div>
         </div>
 
       </div>
     </div>
 
-    <!-- TAB 3: FULL GITHUB DESKTOP WEB INTERFACE -->
+    <!-- ══════════════════════════════════════════════════════════════
+         TAB 3: GITHUB DESKTOP SUITE
+         ══════════════════════════════════════════════════════════════ -->
     <div class="tab-content" id="tabGit">
       <div class="ghd-container">
-        
-        <!-- Top Bar: Current Repo, Current Branch Dropdown, Fetch/Push/Pull, Stash, Worktree -->
+
+        <!-- Top Bar: Repo, Branch, Sync, Stash, Worktree -->
         <div class="ghd-topbar">
           <div class="ghd-repo-group">
-            <button class="ghd-badge-btn" onclick="document.getElementById('repoSelect').focus()">
+            <button class="ghd-badge-btn" onclick="document.getElementById('repoSelect').focus()" title="Select active repository">
               📁 <span id="ghdRepoName">Repository</span>
             </button>
-            
-            <!-- Branch Selector Button -->
-            <button class="ghd-badge-btn" onclick="toggleBranchModal()" id="ghdBranchBtn">
+
+            <button class="ghd-badge-btn" onclick="toggleBranchModal()" id="ghdBranchBtn" title="Current branch — click to switch">
               🌿 <span id="ghdCurrentBranch">main</span> ▾
             </button>
 
-            <!-- Branch Switcher Dropdown Modal -->
+            <!-- Branch Switcher Dropdown -->
             <div class="branch-modal" id="branchModal" onclick="event.stopPropagation()">
-              <input class="branch-search-input" id="branchSearchInput" placeholder="Filter or type new branch name..." oninput="filterBranches(this.value)">
-              <div class="branch-list-scroll" id="branchListScroll">
-                <!-- Branches populated here -->
-              </div>
-              <div style="padding:8px; border-top:1px solid #334155;">
-                <button class="action-btn" style="width:100%; justify-content:center;" onclick="createAndCheckoutBranch()">+ Create New Branch</button>
+              <input class="branch-search-input" id="branchSearchInput" placeholder="Filter or type a new branch name…" oninput="filterBranches(this.value)">
+              <div class="branch-list-scroll" id="branchListScroll"></div>
+              <div class="branch-modal-footer">
+                <button class="action-btn" onclick="openNewBranchDialog()">+ Create new branch</button>
               </div>
             </div>
           </div>
 
-          <!-- Fetch / Pull / Push Action Group + Stash & Worktree -->
-          <div style="display:flex; align-items:center; gap:8px;">
-            <button class="action-btn" onclick="quickStash()" title="Stash uncommitted changes">📦 Stash Changes</button>
-            <button class="action-btn" onclick="openStashesModal()" id="ghdStashNavBtn">📦 Stashes (0)</button>
-            <button class="action-btn" onclick="openWorktreeModal()">🌳 Worktree Manager</button>
-            <button class="action-btn" onclick="ghdFetch()">🔄 Fetch Origin</button>
-            <button class="action-btn" onclick="ghdPull()" id="ghdPullBtn">⬇️ Pull <span id="ghdBehindCount">0</span></button>
-            <button class="ghd-sync-btn" onclick="ghdPush()" id="ghdPushBtn">⬆️ Push <span id="ghdAheadCount">0</span></button>
+          <div class="ghd-topbar-actions">
+            <button class="action-btn" onclick="quickStash()" title="Stash uncommitted changes">📦 Stash</button>
+            <button class="action-btn" onclick="switchGhdTab('stashes')" id="ghdStashNavBtn">Stashes <span class="ghd-section-badge" id="ghdStashesBadgeCount">0</span></button>
+            <button class="action-btn" onclick="openWorktreeModal()">🌳 Worktrees</button>
+            <span class="ghd-topbar-sep"></span>
+            <button class="action-btn" onclick="ghdFetch()" title="Fetch all remotes">🔄 Fetch</button>
+            <button class="action-btn" onclick="ghdPull()" id="ghdPullBtn" title="Pull remote changes">⬇️ Pull <span id="ghdBehindCount" class="count-badge count-badge--behind">0</span></button>
+            <button class="ghd-sync-btn" onclick="ghdPush()" id="ghdPushBtn" title="Push local commits">⬆️ Push <span id="ghdAheadCount" class="count-badge count-badge--ahead">0</span></button>
           </div>
         </div>
 
-        <!-- Split View: Left (Changes & History) | Right (Diff Viewer) -->
-        <div class="ghd-split-view">
-          
-          <!-- Left Pane (360px) -->
-          <div class="ghd-left-pane">
+        <!-- Split View: Left (5 sub-tabs) | Resizer | Right (Diff viewer) -->
+        <div class="ghd-split-view" id="ghdSplitView">
+
+          <div class="ghd-left-pane" id="ghdLeftPane">
             <div class="ghd-nav-tabs">
-              <button class="ghd-nav-tab active" id="ghdTabChangesBtn" onclick="switchGhdTab('changes')">Changes (<span id="ghdChangesCount">0</span>)</button>
+              <button class="ghd-nav-tab active" id="ghdTabChangesBtn" onclick="switchGhdTab('changes')">Changes <span id="ghdChangesCount">0</span></button>
               <button class="ghd-nav-tab" id="ghdTabHistoryBtn" onclick="switchGhdTab('history')">History</button>
+              <button class="ghd-nav-tab" id="ghdTabBranchesBtn" onclick="switchGhdTab('branches')">Branches</button>
+              <button class="ghd-nav-tab" id="ghdTabIssuesBtn" onclick="switchGhdTab('issues')">Issues <span id="ghdIssuesCount"></span></button>
+              <button class="ghd-nav-tab" id="ghdTabStashesBtn" onclick="switchGhdTab('stashes')">Stashes</button>
             </div>
 
-            <!-- 1. CHANGES TAB -->
-            <div id="ghdChangesTab" style="display:flex; flex-direction:column; flex:1; overflow:hidden;">
-              
-              <!-- Stashed Changes Notification Banner (GitHub Desktop style) -->
+            <!-- 1. CHANGES -->
+            <div id="ghdChangesTab" class="ghd-pane" style="display:flex;">
+
               <div id="ghdStashBanner" class="stash-banner" style="display:none;"></div>
 
-              <div style="padding:8px 12px; background:#070a12; border-bottom:1px solid #1e293b; display:flex; justify-content:space-between; align-items:center; font-size:12px;">
-                <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-weight:700;">
+              <div class="ghd-list-toolbar">
+                <label class="ghd-check-label">
                   <input type="checkbox" id="selectAllCheckbox" onchange="toggleSelectAllFiles(this.checked)" checked>
-                  Select All
+                  Select all
                 </label>
-                <div style="display:flex; align-items:center; gap:8px;">
-                  <button class="action-btn" onclick="quickStash()" style="font-size:11px; padding:2px 7px;">📦 Stash</button>
-                  <span style="color:var(--text-muted);" id="ghdSelectedCount">0 files selected</span>
+                <div class="ghd-toolbar-group">
+                  <button class="ghd-mini-btn" onclick="stageAllChanges()" title="Stage all changes">Stage all</button>
+                  <button class="ghd-mini-btn" onclick="unstageAllChanges()" title="Unstage all changes">Unstage all</button>
+                  <button class="ghd-mini-btn ghd-mini-btn--danger" onclick="discardAllChangesConfirm()" title="Discard all changes">Discard all</button>
                 </div>
               </div>
 
               <div class="ghd-changes-list" id="ghdChangesList">
-                <div style="color:var(--text-muted); text-align:center; padding:20px;">Loading changes...</div>
+
+                <div id="ghdStagedSection" class="ghd-change-section">
+                  <div class="ghd-section-header" onclick="toggleSectionCollapse('ghdStagedItems')">
+                    <span>Staged (<span id="ghdStagedCount">0</span>)</span>
+                    <span class="ghd-section-badge">STAGED</span>
+                  </div>
+                  <div id="ghdStagedItems" class="ghd-file-group"></div>
+                </div>
+
+                <div id="ghdUnstagedSection" class="ghd-change-section">
+                  <div class="ghd-section-header" onclick="toggleSectionCollapse('ghdUnstagedItems')">
+                    <span>Unstaged (<span id="ghdUnstagedCount">0</span>)</span>
+                    <span class="ghd-section-badge">UNSTAGED</span>
+                  </div>
+                  <div id="ghdUnstagedItems" class="ghd-file-group"></div>
+                </div>
+
+                <div id="ghdUntrackedSection" class="ghd-change-section">
+                  <div class="ghd-section-header" onclick="toggleSectionCollapse('ghdUntrackedItems')">
+                    <span>Untracked (<span id="ghdUntrackedCount">0</span>)</span>
+                    <span class="ghd-section-badge">UNTRACKED</span>
+                  </div>
+                  <div id="ghdUntrackedItems" class="ghd-file-group"></div>
+                </div>
+
+                <div id="ghdNoChangesMsg" class="empty-state">
+                  ✨ No uncommitted changes. Working tree clean.
+                </div>
+
               </div>
 
-              <!-- Commit Box at Bottom -->
               <div class="ghd-commit-box">
                 <input class="ghd-input-summary" id="commitSummaryInput" placeholder="Summary (required)" oninput="updateCommitBtnState()">
-                <textarea class="ghd-input-desc" id="commitDescInput" placeholder="Description"></textarea>
+                <textarea class="ghd-input-desc" id="commitDescInput" placeholder="Description (optional)"></textarea>
                 <button class="ghd-commit-btn" id="commitActionBtn" onclick="ghdCommit()" disabled>
                   ✓ Commit to <span id="commitTargetBranch">main</span>
                 </button>
               </div>
             </div>
 
-            <!-- 2. HISTORY TAB -->
-            <div id="ghdHistoryTab" style="display:none; flex-direction:column; flex:1; overflow:hidden;">
-              <div class="ghd-history-list" id="ghdHistoryList">
-                <!-- Commits populated dynamically -->
+            <!-- 2. HISTORY -->
+            <div id="ghdHistoryTab" class="ghd-pane">
+              <div class="ghd-list-toolbar">
+                <input class="branch-search-input ghd-search-input" id="historySearchInput" placeholder="🔍 Search commits, authors, or SHAs…" oninput="filterHistoryList(this.value)">
+              </div>
+              <div class="ghd-history-list" id="ghdHistoryList"></div>
+            </div>
+
+            <!-- 3. BRANCHES -->
+            <div id="ghdBranchesTab" class="ghd-pane">
+              <div class="ghd-list-toolbar">
+                <input class="branch-search-input ghd-search-input" id="branchesTabSearchInput" placeholder="🔍 Filter branches…" oninput="filterBranchesTabList(this.value)">
+                <button class="action-btn action-btn--success action-btn--sm" onclick="openNewBranchDialog()">+ New</button>
+              </div>
+              <div class="ghd-tab-scroll" id="ghdBranchesList"></div>
+            </div>
+
+            <!-- 4. ISSUES & PRS -->
+            <div id="ghdIssuesTab" class="ghd-pane">
+              <div class="ghd-list-toolbar ghd-list-toolbar--stack">
+                <div class="ghd-toolbar-group">
+                  <input class="branch-search-input ghd-search-input" id="issuesTabSearchInput" placeholder="🔍 Search issues &amp; PRs…" oninput="filterIssuesTabList(this.value)">
+                  <button class="action-btn action-btn--success action-btn--sm" onclick="openNewIssueDialog()">+ New</button>
+                </div>
+                <div class="ghd-toolbar-group">
+                  <button class="ghd-mini-btn active" id="filterIssuesOpenBtn" onclick="filterIssuesByState('open')">Open</button>
+                  <button class="ghd-mini-btn" id="filterIssuesClosedBtn" onclick="filterIssuesByState('closed')">Closed</button>
+                  <button class="ghd-mini-btn" id="filterIssuesAllBtn" onclick="filterIssuesByState('all')">All</button>
+                </div>
+              </div>
+              <div class="ghd-tab-scroll" id="ghdIssuesList"></div>
+            </div>
+
+            <!-- 5. STASHES & WORKTREES -->
+            <div id="ghdStashesTab" class="ghd-pane">
+              <div class="ghd-list-toolbar">
+                <span class="header-label">📦 Stashes &amp; worktrees</span>
+                <div class="ghd-toolbar-group">
+                  <button class="ghd-mini-btn" onclick="quickStash()">+ Stash</button>
+                  <button class="ghd-mini-btn" onclick="openWorktreeModal()">+ Worktree</button>
+                </div>
+              </div>
+              <div class="ghd-tab-scroll" id="ghdStashesContainer">
+                <div class="ghd-section-header"><span>Stashed working states</span></div>
+                <div id="ghdStashesInnerList" class="ghd-file-group"></div>
+                <div class="ghd-section-header"><span>Active worktrees</span></div>
+                <div id="ghdWorktreesInnerList" class="ghd-file-group"></div>
               </div>
             </div>
 
           </div>
 
-          <!-- Right Main Stage: Diff Viewer -->
-          <div class="ghd-right-pane">
+          <!-- Draggable Resizer between GHD Left Pane and Diff Pane -->
+          <div class="resizer-col" id="ghdSplitResizer" data-resizer="ghd" title="Drag to resize, double-click to reset"></div>
+
+          <!-- Right Main Stage: Interactive Diff & Details Viewer -->
+          <div class="ghd-right-pane" id="ghdRightPane">
             <div class="ghd-diff-header">
-              <span id="ghdDiffTitle">Select a file to inspect diff</span>
-              <div style="display:flex; gap:8px;">
-                <button class="action-btn" id="ghdDiscardFileBtn" style="display:none;" onclick="discardSelectedFile()">🗑️ Discard Changes</button>
+              <div class="ghd-diff-titlegroup">
+                <button class="action-btn action-btn--sm ghd-mobile-back-btn" id="ghdMobileBackBtn" onclick="toggleGhdMobileView('list')" title="Back to changes list">
+                  ← Back
+                </button>
+                <span id="ghdDiffTitle" class="ghd-diff-title">Select a file to inspect its diff</span>
+                <span id="ghdDiffStats" class="ghd-diff-stats"></span>
+              </div>
+              <div class="ghd-diff-actions">
+                <div class="diff-mode-toggle">
+                  <button class="diff-mode-btn active" id="diffModeUnifiedBtn" onclick="setDiffViewMode('unified')">Unified</button>
+                  <button class="diff-mode-btn" id="diffModeSplitBtn" onclick="setDiffViewMode('split')">Split</button>
+                </div>
+                <button class="action-btn action-btn--sm" id="ghdToggleStageFileBtn" style="display:none;" onclick="toggleStageSelectedFile()">📝 Stage</button>
+                <button class="action-btn action-btn--sm danger" id="ghdDiscardFileBtn" style="display:none;" onclick="discardSelectedFile()">🗑️ Discard</button>
+                <button class="action-btn action-btn--sm action-btn--accent" id="ghdSendToLoopBtn" style="display:none;" onclick="sendSelectedFileToLoop()">🤖 Send to Auto-Dev</button>
               </div>
             </div>
             <div class="ghd-diff-viewer" id="ghdDiffContent">
-              <div style="color:var(--text-muted); padding:20px;">Select a modified file on the left to review unified diff.</div>
+              <div class="empty-state">
+                Select a modified or staged file on the left — or a commit from History — to inspect the diff.
+              </div>
             </div>
           </div>
 
@@ -307,280 +437,355 @@
       </div>
     </div>
 
-    <!-- TAB 4: PARALLEL SWARM TOPOLOGY -->
+    <!-- ══════════════════════════════════════════════════════════════
+         TAB 4: SWARM TOPOLOGY
+         ══════════════════════════════════════════════════════════════ -->
     <div class="tab-content" id="tabTopo">
-      <div class="topology-container" style="flex:1; padding:20px; max-width:1300px; margin:0 auto; width:100%; display:flex; flex-direction:column; gap:8px; align-items:center;">
-        
-        <div class="registry-header" style="width:100%; display:flex; justify-content:space-between; align-items:center; background:#0f172a; border:2px solid #334155; border-radius:10px; padding:12px 20px; margin-bottom:10px;">
-          <div>
-            <div style="font-weight:800; color:#ffffff; font-size:15px;">🕸️ Task-Aware Swarm Topology & Dynamic Sub-Agent Slots</div>
-            <div style="font-size:12.5px; color:#cbd5e1;">Sub-agents scale dynamically from 1 to 8 GPU continuous batching slots with custom skill roles.</div>
+      <div class="topology-container">
+
+        <div class="panel-bar" id="topoRegistryHeader">
+          <div class="panel-bar__text">
+            <div class="panel-bar__title">🕸️ Swarm topology &amp; dynamic sub-agent slots</div>
+            <div class="panel-bar__sub">Sub-agents scale from 1 to 8 GPU continuous-batching slots with task-tailored skill roles.</div>
           </div>
-          <div class="header-actions" style="display:flex; align-items:center; gap:10px;">
-            <button class="action-btn" onclick="rescoutModels()" id="rescoutBtn" style="border-color:var(--accent); color:var(--accent); font-weight:700;">🔄 Rescout Models</button>
-            <div class="node-count-badge" id="agentCountBadge">🤖 7 Nodes Registered (0 Running / Idle)</div>
+          <div class="panel-bar__actions">
+            <button class="action-btn action-btn--accent" onclick="rescoutModels()" id="rescoutBtn">🔄 Rescout models</button>
+            <div class="node-count-badge" id="agentCountBadge">7 nodes registered (0 running)</div>
           </div>
         </div>
 
         <!-- Super-Orchestrator Multi-Engine Matrix -->
-        <div style="width:100%; display:flex; flex-direction:column; gap:10px; margin-bottom:18px;">
-          <div style="display:flex; justify-content:space-between; align-items:center;">
-            <span style="font-size:12px; text-transform:uppercase; color:#c084fc; font-weight:800; letter-spacing:1.2px;">
-              ⚡ PLUGGABLE EXECUTION ENGINES & BRIDGES (SUPER-ORCHESTRATOR CONTROL PLANE)
-            </span>
-            <button class="action-btn" onclick="testAllEnginesDiagnostic()" style="font-size:11px; padding:3px 8px; border-color:#a855f7; color:#c084fc;">
-              🧪 Run All Engines Diagnostic
+        <div class="panel panel--well">
+          <div class="section-head">
+            <span class="eyebrow">⚡ Pluggable execution engines &amp; bridges</span>
+            <button class="action-btn action-btn--purple action-btn--sm" onclick="testAllEnginesDiagnostic()">
+              🧪 Run all engine diagnostics
             </button>
           </div>
-          <div id="superOrchestratorEnginesGrid" style="display:grid; grid-template-columns:repeat(auto-fit, minmax(210px, 1fr)); gap:12px; width:100%;">
-            <!-- Dynamically populated via GET /api/backends/status -->
+          <div id="superOrchestratorEnginesGrid" class="engines-grid">
+            <!-- Populated via GET /api/backends/status -->
           </div>
         </div>
 
         <!-- Level 1: Master Orchestrator -->
-        <div style="display:flex; justify-content:center; width:100%;">
-          <div class="agent-card" id="node-gemini" style="width:480px; border:2px solid var(--purple); background:#17132b; box-shadow:0 0 28px var(--purple-glow); border-radius:12px; padding:14px; display:flex; flex-direction:column; gap:6px;">
-            <div style="display:flex; justify-content:space-between; align-items:center;">
-              <span style="font-weight:800; color:#ffffff; font-size:14px;">👑 Gemini Lead Advisor</span>
+        <div class="topo-tier">
+          <div class="agent-card agent-card--lead" id="node-gemini">
+            <div class="agent-card__head">
+              <span class="agent-card__name">👑 Gemini Lead Advisor</span>
               <span class="status-badge badge-idle" id="badge-gemini">IDLE</span>
             </div>
-            <div style="font-size:10.5px; color:#94a3b8; font-weight:800;">LEVEL 1: CHIEF ARCHITECT & TASK DECOMPOSER</div>
-            <div style="display:flex; align-items:center; justify-content:space-between; background:#070a12; border:1.5px solid #334155; border-radius:8px; padding:5px 8px;">
-              <label style="font-size:10px; color:#cbd5e1; font-weight:800;">MODEL:</label>
-              <select class="card-model-select" id="select-gemini" onchange="updateModelAssignment('gemini', this.value)" style="background:transparent; border:none; color:var(--accent); font-family:monospace; font-size:11.5px; font-weight:700; outline:none; cursor:pointer; width:100%;">
-                <option value="">Scouting models...</option>
+            <div class="agent-card__role">Level 1 · Chief architect &amp; task decomposer</div>
+            <div class="model-field">
+              <label class="model-field__label" for="select-gemini">MODEL</label>
+              <select class="card-model-select" id="select-gemini" onchange="updateModelAssignment('gemini', this.value)">
+                <option value="">Scouting models…</option>
               </select>
             </div>
-            <div class="agent-task" id="task-gemini" style="font-family:monospace; font-size:11px; background:#070a12; padding:6px 10px; border-radius:8px; border:1px solid #1e293b; color:#ffffff;">Awaiting user task...</div>
+            <div class="agent-task" id="task-gemini">Awaiting user task…</div>
           </div>
         </div>
 
-        <!-- Arrow -->
-        <div style="display:flex; flex-direction:column; align-items:center; height:32px;">
-          <div style="width:3px; height:20px; background:linear-gradient(to bottom, #c084fc, #38bdf8);"></div>
-        </div>
+        <div class="topo-connector"></div>
 
         <!-- Level 2: Consensus Oracles -->
-        <div style="display:flex; justify-content:center; gap:16px; width:100%;">
-          <div class="agent-card" id="node-lfm" style="width:380px; background:var(--card-bg); border:1.5px solid var(--card-border); border-radius:12px; padding:14px; display:flex; flex-direction:column; gap:6px;">
-            <div style="display:flex; justify-content:space-between; align-items:center;">
-              <span style="font-weight:800; color:var(--accent); font-size:14px;">⚡ Local GPU Swarm Host</span>
+        <div class="topo-tier">
+          <div class="agent-card agent-card--peer" id="node-lfm">
+            <div class="agent-card__head">
+              <span class="agent-card__name agent-card__name--accent">⚡ Local GPU swarm host</span>
               <span class="status-badge badge-online" id="badge-lfm">ONLINE</span>
             </div>
-            <div style="font-size:10.5px; color:#94a3b8; font-weight:800;">LEVEL 2: DYNAMIC BATCHING HOST (8 SLOTS)</div>
-            <div style="font-family:monospace; font-size:11px; background:#070a12; color:var(--accent); border:1px solid #1e293b; padding:3px 7px; border-radius:6px; font-weight:700;">⚡ Dedicated: Liquid LFM 2.5 (2.6B Q8)</div>
-            <div class="agent-task" id="task-lfm" style="font-family:monospace; font-size:11px; background:#070a12; padding:6px 10px; border-radius:8px; border:1px solid #1e293b; color:#ffffff;">Port 8034 (8 continuous batching slots)</div>
+            <div class="agent-card__role">Level 2 · Dynamic batching host (8 slots)</div>
+            <div class="agent-note">Dedicated: Liquid LFM 2.5 (2.6B Q8)</div>
+            <div class="agent-task" id="task-lfm">Port 8034 · 8 continuous batching slots</div>
           </div>
 
-          <div class="agent-card" id="node-qwen" style="width:380px; background:var(--card-bg); border:1.5px solid var(--card-border); border-radius:12px; padding:14px; display:flex; flex-direction:column; gap:6px;">
-            <div style="display:flex; justify-content:space-between; align-items:center;">
-              <span style="font-weight:800; color:var(--green); font-size:14px;">🔮 Qwen Web Oracle</span>
+          <div class="agent-card agent-card--peer" id="node-qwen">
+            <div class="agent-card__head">
+              <span class="agent-card__name agent-card__name--green">🔮 Qwen web oracle</span>
               <span class="status-badge badge-online" id="badge-qwen">READY</span>
             </div>
-            <div style="font-size:10.5px; color:#94a3b8; font-weight:800;">LEVEL 2: ADVERSARIAL CONSENSUS PEER</div>
-            <div style="display:flex; align-items:center; justify-content:space-between; background:#070a12; border:1.5px solid #334155; border-radius:8px; padding:5px 8px;">
-              <label style="font-size:10px; color:#cbd5e1; font-weight:800;">MODEL:</label>
-              <select class="card-model-select" id="select-qwen" onchange="updateModelAssignment('qwen', this.value)" style="background:transparent; border:none; color:var(--accent); font-family:monospace; font-size:11.5px; font-weight:700; outline:none; cursor:pointer; width:100%;">
+            <div class="agent-card__role">Level 2 · Adversarial consensus peer</div>
+            <div class="model-field">
+              <label class="model-field__label" for="select-qwen">MODEL</label>
+              <select class="card-model-select" id="select-qwen" onchange="updateModelAssignment('qwen', this.value)">
                 <option value="qwen-3.8-max">Qwen 3.8 Max</option>
                 <option value="qwen-3.8-coder">Qwen 3.8 Coder</option>
                 <option value="qwen-3.8-thinking">Qwen 3.8 Thinking</option>
                 <option value="qwen-3.8-27b">Qwen 3.8 27B</option>
               </select>
             </div>
-            <div class="agent-task" id="task-qwen" style="font-family:monospace; font-size:11px; background:#070a12; padding:6px 10px; border-radius:8px; border:1px solid #1e293b; color:#ffffff;">chat.qwen.ai session (Qwen 3.8 Max)</div>
+            <div class="agent-task" id="task-qwen">chat.qwen.ai session (Qwen 3.8 Max)</div>
           </div>
         </div>
 
-        <!-- Arrow -->
-        <div style="display:flex; flex-direction:column; align-items:center; height:32px;">
-          <div style="width:3px; height:20px; background:linear-gradient(to bottom, #c084fc, #38bdf8);"></div>
-        </div>
+        <div class="topo-connector"></div>
 
         <!-- Level 3: Dynamic Sub-Agents -->
-        <div style="font-size:12px; text-transform:uppercase; color:#93c5fd; font-weight:800; letter-spacing:1.2px; margin-bottom:4px;">
-          LEVEL 3: DYNAMIC SUB-AGENTS (SCALED 1 TO 8 ON GPU BY TASK COMPLEXITY)
-        </div>
-        <div style="display:flex; justify-content:center; gap:16px; width:100%; flex-wrap:wrap;" id="dynamicSubagentsContainer">
+        <span class="eyebrow">Level 3 · Dynamic sub-agents (scaled 1–8 by task complexity)</span>
+        <div class="topo-tier" id="dynamicSubagentsContainer">
           <!-- Populated dynamically -->
         </div>
 
         <!-- Capacity Matrix Legend -->
-        <div style="width:100%; margin-top:36px; display:flex; flex-direction:column; gap:16px;">
-          <div style="display:flex; justify-content:space-between; align-items:center; background:#0f172a; border:2px solid #334155; border-radius:10px; padding:14px 20px; box-shadow:0 6px 18px rgba(0,0,0,0.5);">
-            <div>
-              <div style="font-weight:800; color:#ffffff; font-size:15px; display:flex; align-items:center; gap:8px;">
-                <span>📚 Swarm Skill & Dynamic Role Catalog</span>
-                <span style="font-size:11.5px; background:rgba(56,189,248,0.2); color:var(--accent); border:1px solid var(--accent); padding:2px 8px; border-radius:12px; font-weight:800;">CAPACITY MATRIX</span>
-              </div>
-              <div style="font-size:12.5px; color:#cbd5e1; margin-top:2px;">Complete live roster of specialized skills and sub-agent roles dynamically assigned across the 8 continuous batching GPU slots.</div>
+        <div class="panel-bar">
+          <div class="panel-bar__text">
+            <div class="panel-bar__title">
+              <span>📚 Swarm skill &amp; role catalog</span>
+              <span class="chip chip--accent">Capacity matrix</span>
             </div>
-            <div style="display:flex; gap:10px; align-items:center;">
-              <input class="git-input" id="legendFilterInput" placeholder="🔍 Filter skills (e.g. security, react, git, db)..." oninput="filterLegendCards(this.value)" style="width:280px; font-size:12px;">
-              <div class="node-count-badge" id="skillsTotalCountBadge" style="background:#1e293b; color:var(--accent); white-space:nowrap;">⚡ 50+ Live Skills</div>
-            </div>
+            <div class="panel-bar__sub">Live roster of specialized skills and sub-agent roles assigned across the 8 GPU batching slots.</div>
           </div>
+          <div class="panel-bar__actions">
+            <input class="git-input" id="legendFilterInput" placeholder="🔍 Filter skills…" oninput="filterLegendCards(this.value)" style="width:240px;">
+            <div class="node-count-badge" id="skillsTotalCountBadge">⚡ 50+ live skills</div>
+          </div>
+        </div>
 
-          <!-- Category Filter Tabs -->
-          <div class="quick-actions" id="skillCategoryPills">
-            <button class="action-btn active" onclick="filterSkillsByCategory('all')">All Skills (All)</button>
-            <button class="action-btn" onclick="filterSkillsByCategory('Security & Audit')">🛡️ Security & Audit</button>
-            <button class="action-btn" onclick="filterSkillsByCategory('Performance & Architecture')">⚡ Performance & DB</button>
-            <button class="action-btn" onclick="filterSkillsByCategory('Frontend & UX')">🎨 Frontend & UI/UX</button>
-            <button class="action-btn" onclick="filterSkillsByCategory('Testing & QA')">🧪 Testing & QA</button>
-            <button class="action-btn" onclick="filterSkillsByCategory('Docs & Knowledge')">📚 Docs & Context7</button>
-            <button class="action-btn" onclick="filterSkillsByCategory('Git & CI/CD')">🌿 Git & CI/CD</button>
-            <button class="action-btn" onclick="filterSkillsByCategory('Core & Reasoning')">💡 Core & Solution</button>
-          </div>
+        <div class="quick-actions" id="skillCategoryPills">
+          <button class="action-btn active" data-category="all" onclick="filterSkillsByCategory('all')">⚡ All skills</button>
+          <button class="action-btn" data-category="Security &amp; Audit" onclick="filterSkillsByCategory('Security &amp; Audit')">🛡️ Security</button>
+          <button class="action-btn" data-category="Testing &amp; QA" onclick="filterSkillsByCategory('Testing &amp; QA')">🧪 Testing &amp; QA</button>
+          <button class="action-btn" data-category="Architecture &amp; Planning" onclick="filterSkillsByCategory('Architecture &amp; Planning')">📐 Architecture</button>
+          <button class="action-btn" data-category="Frontend &amp; UI/UX" onclick="filterSkillsByCategory('Frontend &amp; UI/UX')">🎨 Frontend</button>
+          <button class="action-btn" data-category="Codebase Intelligence &amp; Git" onclick="filterSkillsByCategory('Codebase Intelligence &amp; Git')">🌿 Codebase &amp; Git</button>
+          <button class="action-btn" data-category="Agent Extensions &amp; Customization" onclick="filterSkillsByCategory('Agent Extensions &amp; Customization')">🧩 Extensions</button>
+          <button class="action-btn" data-category="Research &amp; Documentation" onclick="filterSkillsByCategory('Research &amp; Documentation')">📚 Research</button>
+        </div>
 
-          <!-- Dynamic Skills Grid Container -->
-          <div id="dynamicSkillsCatalogContainer" style="display:grid; grid-template-columns:repeat(auto-fill, minmax(320px, 1fr)); gap:14px; width:100%;">
-            <!-- Populated dynamically via GET /api/skills/catalog -->
-          </div>
+        <div id="dynamicSkillsCatalogContainer" class="skills-grid">
+          <!-- Populated via GET /api/skills/catalog -->
         </div>
 
       </div>
     </div>
 
-    <!-- TAB 5: GROUPED ARTIFACTS VAULT -->
+    <!-- ══════════════════════════════════════════════════════════════
+         TAB 5: ARTIFACT VAULT
+         ══════════════════════════════════════════════════════════════ -->
     <div class="tab-content" id="tabVault">
-      <div style="flex:1; padding:20px; max-width:1200px; margin:0 auto; width:100%; display:flex; flex-direction:column; gap:14px;">
-        <div style="display:flex; justify-content:space-between; align-items:center; background:#0f172a; border:2px solid #334155; border-radius:10px; padding:12px 20px;">
-          <div>
-            <div style="font-weight:800; color:#ffffff; font-size:15px;">📁 Remote Artifact Vault & Report Browser</div>
-            <div style="font-size:12.5px; color:#cbd5e1;">All reports, blueprints, and architecture deliverables filtered by repository.</div>
+      <div class="page page--narrow">
+        <div class="panel-bar">
+          <div class="panel-bar__text">
+            <div class="panel-bar__title">📁 Artifact vault</div>
+            <div class="panel-bar__sub">Reports, blueprints and architecture deliverables, filtered by repository.</div>
           </div>
-          <div style="display:flex; gap:8px; align-items:center;">
-            <button class="action-btn" id="vaultFilterSelectedBtn" onclick="toggleArtifactsFilter('selected')" style="background:#1d4ed8; color:#ffffff; font-weight:700;">📁 Current Repo Only</button>
-            <button class="action-btn" id="vaultFilterAllBtn" onclick="toggleArtifactsFilter('all')">🌐 All Repositories</button>
-            <button class="action-btn" onclick="loadArtifactsVault()" style="border-color:var(--accent); color:var(--accent); font-weight:700;">🔄 Refresh</button>
+          <div class="panel-bar__actions">
+            <button class="action-btn active" id="vaultFilterSelectedBtn" onclick="toggleArtifactsFilter('selected')">📁 Current repo</button>
+            <button class="action-btn" id="vaultFilterAllBtn" onclick="toggleArtifactsFilter('all')">🌐 All repos</button>
+            <button class="action-btn action-btn--accent" onclick="loadArtifactsVault()">🔄 Refresh</button>
           </div>
         </div>
 
         <div id="groupedArtifactsContainer">
-          <!-- Populated dynamically with repository group accordion cards -->
+          <!-- Populated dynamically -->
         </div>
+      </div>
+    </div>
+
+    <!-- ══════════════════════════════════════════════════════════════
+         TAB 6: CONTRACTS & DOCUSAURUS ENGINE
+         ══════════════════════════════════════════════════════════════ -->
+    <div class="tab-content" id="tabContracts">
+      <div class="page page--wide">
+
+        <div class="panel-bar">
+          <div class="panel-bar__text">
+            <div class="panel-bar__title">
+              <span>📜 Universal contract &amp; Docusaurus engine</span>
+              <span class="chip chip--accent">Spec discovery</span>
+            </div>
+            <div class="panel-bar__sub">
+              Language-agnostic specs: OpenAPI REST, AsyncAPI channels, FlatBuffers &amp; Protobuf schemas, SCXML statecharts, and CEL invariants.
+            </div>
+          </div>
+          <div class="panel-bar__actions">
+            <button class="action-btn action-btn--success" onclick="exportContractsToDocusaurusAction()">📚 Export to Docusaurus</button>
+            <button class="action-btn action-btn--accent" onclick="loadContractsCatalog()">🔄 Scan &amp; refresh</button>
+          </div>
+        </div>
+
+        <div class="metrics-grid">
+          <div class="metric-tile">
+            <div class="metric-tile__label">OpenAPI endpoints</div>
+            <div id="metricOpenApiCount" class="metric-tile__value metric-tile__value--accent">0</div>
+          </div>
+          <div class="metric-tile">
+            <div class="metric-tile__label">AsyncAPI channels</div>
+            <div id="metricAsyncApiCount" class="metric-tile__value metric-tile__value--sky">0</div>
+          </div>
+          <div class="metric-tile">
+            <div class="metric-tile__label">FlatBuffers tables</div>
+            <div id="metricFlatBuffersCount" class="metric-tile__value metric-tile__value--amber">0</div>
+          </div>
+          <div class="metric-tile">
+            <div class="metric-tile__label">Protobuf schemas</div>
+            <div id="metricProtobufCount" class="metric-tile__value metric-tile__value--purple">0</div>
+          </div>
+          <div class="metric-tile">
+            <div class="metric-tile__label">SCXML statecharts</div>
+            <div id="metricStatechartsCount" class="metric-tile__value metric-tile__value--green">0</div>
+          </div>
+          <div class="metric-tile">
+            <div class="metric-tile__label">CEL invariants</div>
+            <div id="metricCelCount" class="metric-tile__value metric-tile__value--rose">0</div>
+          </div>
+        </div>
+
+        <div class="section-head">
+          <div class="quick-actions" id="contractsCategoryPills">
+            <button class="action-btn active" data-cat="all" onclick="filterContractsCategory('all')">⚡ All specs</button>
+            <button class="action-btn" data-cat="openapi" onclick="filterContractsCategory('openapi')">📜 OpenAPI</button>
+            <button class="action-btn" data-cat="asyncapi" onclick="filterContractsCategory('asyncapi')">📡 AsyncAPI</button>
+            <button class="action-btn" data-cat="flatbuffers" onclick="filterContractsCategory('flatbuffers')">⚡ FlatBuffers</button>
+            <button class="action-btn" data-cat="protobuf" onclick="filterContractsCategory('protobuf')">📦 Protobuf</button>
+            <button class="action-btn" data-cat="statecharts" onclick="filterContractsCategory('statecharts')">🔄 Statecharts</button>
+            <button class="action-btn" data-cat="cel" onclick="filterContractsCategory('cel')">🛡️ CEL</button>
+          </div>
+          <input class="git-input" id="contractsSearchInput" placeholder="🔍 Search contracts, paths, schemas…" oninput="searchContracts(this.value)" style="width:260px;">
+        </div>
+
+        <div id="contractsCatalogContainer" class="skills-grid" style="grid-template-columns:1fr;">
+          <!-- Loaded dynamically -->
+        </div>
+
+        <!-- CEL Invariant Live Tester -->
+        <div class="cel-tester">
+          <div class="loop-card-head">
+            <span class="section-title">🧪 CEL live tester</span>
+            <span id="celLiveVerdictBadge" class="file-status-badge status-u">READY</span>
+          </div>
+          <div class="form-grid-2">
+            <div class="field">
+              <label class="field-label" for="celTestExprInput">CEL invariant expression</label>
+              <input class="git-input" id="celTestExprInput" placeholder="state.balance >= 0.0" value="state.balance >= 0.0 &amp;&amp; size(state.items) > 0">
+            </div>
+            <div class="field">
+              <label class="field-label" for="celTestContextInput">JSON state context payload</label>
+              <input class="git-input" id="celTestContextInput" placeholder='{"state": {"balance": 100.0, "items": ["token"]}}' value='{"state": {"balance": 150.0, "items": ["item1", "item2"]}}'>
+            </div>
+          </div>
+          <div class="cel-tester__actions">
+            <button class="action-btn action-btn--primary" onclick="executeCelLiveTest()">⚡ Evaluate CEL rule</button>
+          </div>
+        </div>
+
       </div>
     </div>
 
   </div>
 
-  <!-- BRANCH SWITCH PROMPT MODAL (STASH LOCAL CHANGES LIKE GITHUB DESKTOP) -->
+  <!-- ══════════════════════════════════════════════════════════════════
+       MODALS
+       ══════════════════════════════════════════════════════════════════ -->
+
+  <!-- BRANCH SWITCH PROMPT (STASH LOCAL CHANGES) -->
   <div class="modal-overlay" id="branchSwitchModal" onclick="closeBranchSwitchModal()">
-    <div class="modal-box" onclick="event.stopPropagation()" style="width:560px;">
+    <div class="modal-box modal-box--md" onclick="event.stopPropagation()">
       <div class="modal-header">
-        <span>Switch Branch · Uncommitted Changes</span>
-        <button class="action-btn" onclick="closeBranchSwitchModal()">✕</button>
+        <span>Switch branch · uncommitted changes</span>
+        <button class="action-btn action-btn--ghost" onclick="closeBranchSwitchModal()">✕</button>
       </div>
-      <div class="modal-body" style="display:flex; flex-direction:column; gap:16px;">
-        <div style="color:#ffffff; font-size:13.5px; line-height:1.5;">
-          You have <b style="color:var(--orange);"><span id="switchChangeCount">0</span> uncommitted changes</b>. How would you like to switch to <b style="color:var(--accent);">🌿 <span id="switchTargetBranchName">branch</span></b>?
+      <div class="modal-body">
+        <div class="hint">
+          You have <b class="text-warn"><span id="switchChangeCount">0</span> uncommitted changes</b>.
+          How would you like to switch to <b class="text-accent">🌿 <span id="switchTargetBranchName">branch</span></b>?
         </div>
 
-        <div style="display:flex; flex-direction:column; gap:10px;">
-          <!-- Option 1: Stash & Switch (Recommended) -->
-          <div style="background:#0b1222; border:1.5px solid var(--accent); border-radius:8px; padding:12px; cursor:pointer;" onclick="confirmStashAndSwitch()">
-            <div style="font-weight:800; color:var(--accent); font-size:13px; display:flex; justify-content:space-between;">
-              <span>📦 Stash changes and switch (Recommended)</span>
-              <span class="file-status-badge status-a">SAFE</span>
+        <div class="field">
+          <div class="choice-card choice-card--recommended" onclick="confirmStashAndSwitch()">
+            <div class="choice-card__title">
+              <span>📦 Stash changes and switch</span>
+              <span class="file-status-badge status-a">Recommended</span>
             </div>
-            <div style="font-size:11.5px; color:#cbd5e1; margin-top:4px;">
-              Leaves your current work safely stashed on this branch. You can restore it anytime when you return.
+            <div class="choice-card__desc">
+              Leaves your work safely stashed on this branch. Restore it any time you return.
             </div>
           </div>
 
-          <!-- Option 2: Bring changes (Standard checkout) -->
-          <div style="background:#0b1222; border:1.5px solid #334155; border-radius:8px; padding:12px; cursor:pointer;" onclick="confirmBringChanges()">
-            <div style="font-weight:800; color:#ffffff; font-size:13px;">
-              🌿 Bring changes to new branch
-            </div>
-            <div style="font-size:11.5px; color:#94a3b8; margin-top:4px;">
-              Carries over all uncommitted modifications to the target branch. (May fail if files conflict).
+          <div class="choice-card" onclick="confirmBringChanges()">
+            <div class="choice-card__title">🌿 Bring changes to the new branch</div>
+            <div class="choice-card__desc">
+              Carries all uncommitted modifications across. May fail if files conflict.
             </div>
           </div>
         </div>
 
-        <div style="display:flex; justify-content:flex-end;">
+        <div class="modal-actions">
           <button class="action-btn" onclick="closeBranchSwitchModal()">Cancel</button>
         </div>
       </div>
     </div>
   </div>
 
-  <!-- STASHES MANAGER MODAL -->
+  <!-- STASHES MANAGER -->
   <div class="modal-overlay" id="stashModal" onclick="closeStashesModal()">
-    <div class="modal-box" onclick="event.stopPropagation()" style="width:750px;">
+    <div class="modal-box modal-box--lg" onclick="event.stopPropagation()">
       <div class="modal-header">
-        <span>📦 Saved Git Stashes</span>
-        <button class="action-btn" onclick="closeStashesModal()">✕ Close</button>
+        <span>📦 Saved git stashes</span>
+        <button class="action-btn action-btn--ghost" onclick="closeStashesModal()">✕ Close</button>
       </div>
-      <div class="modal-body" style="display:flex; flex-direction:column; gap:16px;">
-        <table style="width:100%; border-collapse:collapse; background:#0b1222; border:1px solid #1e293b; border-radius:8px; overflow:hidden;">
+      <div class="modal-body">
+        <table class="data-table">
           <thead>
-            <tr style="background:#090d16; border-bottom:1px solid #1e293b; color:#93c5fd; font-size:11.5px; text-align:left;">
-              <th style="padding:10px 14px;">Stash Ref</th>
-              <th style="padding:10px 14px;">Origin Branch</th>
-              <th style="padding:10px 14px;">Message & Date</th>
-              <th style="padding:10px 14px; text-align:right;">Action</th>
+            <tr>
+              <th>Stash ref</th>
+              <th>Origin branch</th>
+              <th>Message &amp; date</th>
+              <th class="align-right">Action</th>
             </tr>
           </thead>
-          <tbody id="stashesTableBody">
-            <!-- Populated dynamically -->
-          </tbody>
+          <tbody id="stashesTableBody"></tbody>
         </table>
       </div>
     </div>
   </div>
 
-  <!-- WORKTREE MANAGER MODAL -->
+  <!-- WORKTREE MANAGER -->
   <div class="modal-overlay" id="worktreeModal" onclick="closeWorktreeModal()">
-    <div class="modal-box" onclick="event.stopPropagation()" style="width:850px;">
+    <div class="modal-box modal-box--xl" onclick="event.stopPropagation()">
       <div class="modal-header">
-        <span>🌳 Git Worktree Manager (Isolated Workspaces)</span>
-        <button class="action-btn" onclick="closeWorktreeModal()">✕ Close</button>
+        <span>🌳 Worktree manager</span>
+        <button class="action-btn action-btn--ghost" onclick="closeWorktreeModal()">✕ Close</button>
       </div>
-      <div class="modal-body" style="display:flex; flex-direction:column; gap:18px;">
-        <div>
-          <div style="font-weight:800; color:#ffffff; font-size:13.5px; margin-bottom:8px;">Active Worktrees for Repository</div>
-          <table style="width:100%; border-collapse:collapse; background:#0b1222; border:1px solid #1e293b; border-radius:8px; overflow:hidden;">
+      <div class="modal-body">
+        <div class="field">
+          <div class="section-title">Active worktrees</div>
+          <table class="data-table">
             <thead>
-              <tr style="background:#090d16; border-bottom:1px solid #1e293b; color:#93c5fd; font-size:11.5px; text-align:left;">
-                <th style="padding:10px 14px;">Directory Path</th>
-                <th style="padding:10px 14px;">Branch</th>
-                <th style="padding:10px 14px;">Commit</th>
-                <th style="padding:10px 14px; text-align:right;">Action</th>
+              <tr>
+                <th>Directory path</th>
+                <th>Branch</th>
+                <th>Commit</th>
+                <th class="align-right">Action</th>
               </tr>
             </thead>
-            <tbody id="worktreesTableBody">
-              <!-- Populated dynamically -->
-            </tbody>
+            <tbody id="worktreesTableBody"></tbody>
           </table>
         </div>
 
-        <div style="background:#0b1222; border:1.5px solid #1e293b; border-radius:8px; padding:16px; display:flex; flex-direction:column; gap:12px;">
-          <div style="font-weight:800; color:var(--accent); font-size:13.5px;">+ Create New Worktree</div>
-          
-          <div style="display:grid; grid-template-columns: 1fr 1fr; gap:12px;">
-            <div>
-              <label style="font-size:11px; color:#cbd5e1; font-weight:700; display:block; margin-bottom:4px;">Worktree Directory Path (relative or absolute):</label>
-              <input class="git-input" id="wtPathInput" placeholder="../worktree-feature-x" style="width:100%;">
+        <div class="panel panel--well">
+          <div class="section-title section-title--accent">+ Create new worktree</div>
+
+          <div class="form-grid-2">
+            <div class="field">
+              <label class="field-label" for="wtPathInput">Worktree directory path</label>
+              <input class="git-input" id="wtPathInput" placeholder="../worktree-feature-x">
             </div>
-            <div>
-              <label style="font-size:11px; color:#cbd5e1; font-weight:700; display:block; margin-bottom:4px;">Select Existing Branch:</label>
-              <select class="git-input" id="wtBranchSelect" style="width:100%;">
+            <div class="field">
+              <label class="field-label" for="wtBranchSelect">Existing branch</label>
+              <select class="git-input" id="wtBranchSelect">
                 <option value="">Current HEAD</option>
               </select>
             </div>
           </div>
 
-          <div>
-            <label style="font-size:11px; color:#cbd5e1; font-weight:700; display:block; margin-bottom:4px;">Or Create New Branch for Worktree:</label>
-            <input class="git-input" id="wtNewBranchInput" placeholder="feature/new-isolated-branch" style="width:100%;">
+          <div class="field">
+            <label class="field-label" for="wtNewBranchInput">Or create a new branch for the worktree</label>
+            <input class="git-input" id="wtNewBranchInput" placeholder="feature/new-isolated-branch">
           </div>
 
-          <div style="display:flex; justify-content:flex-end;">
-            <button class="action-btn" onclick="addWorktreeFromModal()" style="background:#16a34a; color:#ffffff; font-weight:800; border:none; padding:8px 16px;">
-              🌳 Add & Checkout Worktree
-            </button>
+          <div class="modal-actions">
+            <button class="action-btn action-btn--success" onclick="addWorktreeFromModal()">🌳 Add &amp; checkout worktree</button>
           </div>
         </div>
 
@@ -588,59 +793,54 @@
     </div>
   </div>
 
-  <!-- In-Page Artifact Modal Reader -->
+  <!-- ARTIFACT READER -->
   <div class="modal-overlay" id="artifactModal" onclick="closeArtifactModal()">
     <div class="modal-box" onclick="event.stopPropagation()">
       <div class="modal-header">
-        <span id="modalDocTitle">📄 Document Viewer</span>
-        <div style="display:flex; gap:8px;">
+        <span id="modalDocTitle">📄 Document viewer</span>
+        <div class="modal-header__actions">
           <button class="action-btn" id="modalCopyBtn">📋 Copy</button>
           <button class="action-btn" id="modalDownloadBtn">⬇️ Download</button>
-          <button class="action-btn" onclick="closeArtifactModal()">✕ Close</button>
+          <button class="action-btn action-btn--ghost" onclick="closeArtifactModal()">✕ Close</button>
         </div>
       </div>
       <div class="modal-body markdown-body" id="modalDocContent">
-        Loading document content...
+        Loading document content…
       </div>
     </div>
   </div>
 
-  <!-- CLEAN ARCHITECTURE RULES MODAL (GLOBAL & PROJECT SPECIFIC) -->
+  <!-- ARCHITECTURE RULES -->
   <div class="modal-overlay" id="rulesModal" onclick="closeRulesModal()">
-    <div class="modal-box" onclick="event.stopPropagation()" style="width:780px; max-width:92vw;">
+    <div class="modal-box modal-box--lg" onclick="event.stopPropagation()">
       <div class="modal-header">
-        <span style="font-weight:800; color:#ffffff; font-size:16px;">📜 Clean Architecture & Swarm Quality Rules</span>
-        <button class="action-btn" onclick="closeRulesModal()">✕ Close</button>
+        <span>📜 Clean architecture &amp; swarm quality rules</span>
+        <button class="action-btn action-btn--ghost" onclick="closeRulesModal()">✕ Close</button>
       </div>
-      <div class="modal-body" style="display:flex; flex-direction:column; gap:16px; padding:20px;">
-        
-        <!-- Tab Switcher for Global vs Project Rules -->
-        <div class="quick-actions" style="border-bottom:1px solid #1e293b; padding-bottom:10px;">
-          <button class="action-btn active" id="rulesTabGlobalBtn" onclick="switchRulesTab('global')">🌐 Global Architecture Rules (Mandatory)</button>
-          <button class="action-btn" id="rulesTabProjectBtn" onclick="switchRulesTab('project')">📁 Project-Specific Rules (<span id="rulesProjectRepoName">Active Repo</span>)</button>
+      <div class="modal-body">
+
+        <div class="modal-tabs">
+          <button class="action-btn active" id="rulesTabGlobalBtn" onclick="switchRulesTab('global')">🌐 Global rules</button>
+          <button class="action-btn" id="rulesTabProjectBtn" onclick="switchRulesTab('project')">📁 Project rules (<span id="rulesProjectRepoName">active repo</span>)</button>
         </div>
 
-        <!-- Global Rules Pane -->
-        <div id="rulesGlobalPane" style="display:flex; flex-direction:column; gap:10px;">
-          <div style="font-size:12.5px; color:#cbd5e1;">
-            These standards are automatically injected into all sub-agent prompts, autonomous loops, and Lead Advisor code synthesis:
+        <div id="rulesGlobalPane" class="rules-pane" style="display:flex;">
+          <div class="hint">
+            These standards are injected into all sub-agent prompts, autonomous loops, and Lead Advisor code synthesis:
           </div>
-          <textarea id="globalRulesEditor" style="width:100%; height:260px; background:#070a12; border:1px solid #334155; border-radius:8px; color:#ffffff; font-family:monospace; font-size:12.5px; padding:12px; resize:vertical; line-height:1.5;"></textarea>
-          <div style="display:flex; justify-content:space-between; align-items:center;">
-            <span style="font-size:11.5px; color:var(--text-muted);">Enforces small functions (≤30 lines), 1 domain model/file, Dependency Injection, and high refactorability.</span>
-            <button class="action-btn" onclick="saveGlobalRulesAction()" style="background:#16a34a; color:#ffffff; font-weight:800; border:none; padding:6px 14px;">
-              💾 Save Global Rules
-            </button>
+          <textarea id="globalRulesEditor" class="rules-editor"></textarea>
+          <div class="section-head">
+            <span class="hint">Enforces small functions (≤30 lines), one domain model per file, dependency injection, and high refactorability.</span>
+            <button class="action-btn action-btn--success" onclick="saveGlobalRulesAction()">💾 Save global rules</button>
           </div>
         </div>
 
-        <!-- Project Rules Pane -->
-        <div id="rulesProjectPane" style="display:none; flex-direction:column; gap:10px;">
-          <div style="font-size:12.5px; color:#cbd5e1;">
-            Project-specific conventions automatically discovered from <code>RULE.md</code>, <code>GEMINI.md</code>, <code>CLAUDE.md</code>, or <code>.cursorrules</code> in the selected repository:
+        <div id="rulesProjectPane" class="rules-pane">
+          <div class="hint">
+            Project conventions discovered from <code>RULE.md</code>, <code>GEMINI.md</code>, <code>CLAUDE.md</code>, or <code>.cursorrules</code> in the selected repository:
           </div>
-          <div id="projectRulesContent" class="markdown-body" style="background:#070a12; border:1px solid #1e293b; border-radius:8px; padding:14px; max-height:300px; overflow-y:auto; font-size:12.5px;">
-            Scanning repository for rules...
+          <div id="projectRulesContent" class="markdown-body rules-preview">
+            Scanning repository for rules…
           </div>
         </div>
 
@@ -648,20 +848,90 @@
     </div>
   </div>
 
-  <!-- FLOATING DEBUG LOGS DRAWER & BUTTON -->
-  <button class="debug-toggle-btn" onclick="toggleDebugDrawer()">🐞 Live Logs</button>
+  <!-- GENERIC CONFIRMATION -->
+  <div class="modal-overlay" id="ghdConfirmModal" onclick="closeGhdConfirmModal()">
+    <div class="modal-box modal-box--sm" onclick="event.stopPropagation()">
+      <div class="modal-header">
+        <span id="ghdConfirmTitle">⚠️ Confirm action</span>
+        <button class="action-btn action-btn--ghost" onclick="closeGhdConfirmModal()">✕</button>
+      </div>
+      <div class="modal-body">
+        <div id="ghdConfirmMessage" class="hint">Are you sure?</div>
+        <div class="modal-actions">
+          <button class="action-btn" onclick="closeGhdConfirmModal()">Cancel</button>
+          <button class="action-btn action-btn--solid-danger" id="ghdConfirmBtn">Confirm</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- NEW BRANCH -->
+  <div class="modal-overlay" id="ghdNewBranchModal" onclick="closeGhdNewBranchModal()">
+    <div class="modal-box modal-box--sm" onclick="event.stopPropagation()">
+      <div class="modal-header">
+        <span>🌿 Create new branch</span>
+        <button class="action-btn action-btn--ghost" onclick="closeGhdNewBranchModal()">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="field">
+          <label class="field-label" for="newBranchNameInput">New branch name</label>
+          <input class="git-input" id="newBranchNameInput" placeholder="feature/your-feature-name">
+        </div>
+        <div class="field">
+          <label class="field-label" for="newBranchStartPointInput">Base on (start point)</label>
+          <input class="git-input" id="newBranchStartPointInput" placeholder="main (or commit SHA)">
+        </div>
+        <div class="modal-actions">
+          <button class="action-btn" onclick="closeGhdNewBranchModal()">Cancel</button>
+          <button class="action-btn action-btn--success" onclick="submitCreateNewBranch()">Create &amp; checkout</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- NEW ISSUE -->
+  <div class="modal-overlay" id="ghdNewIssueModal" onclick="closeGhdNewIssueModal()">
+    <div class="modal-box modal-box--md" onclick="event.stopPropagation()">
+      <div class="modal-header">
+        <span>🐙 Create GitHub tracking issue</span>
+        <button class="action-btn action-btn--ghost" onclick="closeGhdNewIssueModal()">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="field">
+          <label class="field-label" for="newIssueTitleInput">Issue title</label>
+          <input class="git-input" id="newIssueTitleInput" placeholder="feat: Implement Redis session store">
+        </div>
+        <div class="field">
+          <label class="field-label" for="newIssueBodyInput">Description / acceptance criteria</label>
+          <textarea class="git-input" id="newIssueBodyInput" placeholder="Detailed user story and acceptance criteria…" style="height:120px; resize:vertical;"></textarea>
+        </div>
+        <div class="field">
+          <label class="field-label" for="newIssueLabelsInput">Labels (comma-separated)</label>
+          <input class="git-input" id="newIssueLabelsInput" placeholder="enhancement, swarm-auto">
+        </div>
+        <div class="modal-actions">
+          <button class="action-btn" onclick="closeGhdNewIssueModal()">Cancel</button>
+          <button class="action-btn action-btn--success" onclick="submitCreateNewIssue()">Create issue</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- FLOATING DEBUG LOGS DRAWER -->
+  <button class="debug-toggle-btn" onclick="toggleDebugDrawer()">🐞 Live logs</button>
   <div class="debug-drawer" id="debugDrawer">
     <div class="debug-header">
-      <span>🐞 Activity & Action Diagnostics</span>
-      <div style="display:flex; gap:6px;">
-        <button class="action-btn" onclick="clearDebugLogs()" style="font-size:11px; padding:2px 8px;">Clear</button>
-        <button class="action-btn" onclick="toggleDebugDrawer()" style="font-size:11px; padding:2px 8px;">✕</button>
+      <span>🐞 Activity diagnostics</span>
+      <div class="ghd-toolbar-group">
+        <button class="action-btn action-btn--sm" onclick="clearDebugLogs()">Clear</button>
+        <button class="action-btn action-btn--sm action-btn--ghost" onclick="toggleDebugDrawer()">✕</button>
       </div>
     </div>
-    <div class="debug-log-list" id="debugLogList">
-      <!-- Live logs populated dynamically -->
-    </div>
+    <div class="debug-log-list" id="debugLogList"></div>
   </div>
+
+  <!-- CUSTOM RIGHT-CLICK CONTEXT MENU -->
+  <div id="customContextMenu" class="custom-context-menu" style="display:none;" onclick="event.stopPropagation()"></div>
 
   <script src="/js/app.js"></script>
 </body>

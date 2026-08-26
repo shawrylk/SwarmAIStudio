@@ -11,7 +11,7 @@ PORT="${SWARM_PORT:-8080}"
 fuser -k "${PORT}/tcp" >/dev/null 2>&1 || true
 
 echo "Starting Swarm AI Studio in background on port ${PORT}..."
-nohup "${ROOT_DIR}/bin/swarm-studio" --port "$PORT" > "${ROOT_DIR}/swarm_studio.log" 2>&1 &
+nohup "${ROOT_DIR}/bin/swarm" web --port "$PORT" > "${ROOT_DIR}/swarm_studio.log" 2>&1 &
 PID=$!
 
 sleep 1.2

@@ -1,18 +1,36 @@
-version: "3.8"
-
 services:
   swarm-studio:
     build: .
+    image: swarm-ai-studio:latest
     container_name: swarm-ai-studio
     restart: unless-stopped
     ports:
-      - "8080:8080"
+      - "${SWARM_PORT:-8080}:8080"
     environment:
       - SWARM_PORT=8080
       - SWARM_HOST=0.0.0.0
+      # The local GPU LFM host runs on the *host machine* (port 8034); reach it
+      # from inside the container via host.docker.internal.
       - LFM_URL=http://host.docker.internal:8034/v1/chat/completions
+      - LFM_HEALTH_URL=http://host.docker.internal:8034/health
+      # Optional overrides:
+      # - SWARM_MAX_CONCURRENCY=8
+      # - SWARM_AUTO_RESUME=1
     volumes:
-      - ~/.swarm:/root/.swarm
-      - ~/Documents/GitHub:/root/Documents/GitHub:ro
+      # Persistent vault, sessions, rules, logs.
+      - swarm-data:/root/.swarm
+      # Mount your repos READ-WRITE so the GitHub Desktop suite and the
+      # autonomous loop can stage, commit, stash and create worktrees.
+      # (Point REPOS_DIR at wherever your git projects live.)
+      - "${REPOS_DIR:-~/Documents/GitHub}:/root/Documents/GitHub:rw"
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/api/repos"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  swarm-data:
