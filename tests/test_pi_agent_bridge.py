@@ -197,3 +197,40 @@ class TestDevStageUsesPi(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestMalformedWriteDetection(unittest.TestCase):
+    """Observed live: the agent wrote a test file whose whole body was one line
+    containing literal backslash-n, so pytest failed at collection. The gate
+    caught it but the retry feedback never explained why."""
+
+    def test_literal_escape_file_is_flagged(self):
+        from swarm.pi_agent import detect_malformed_writes
+        with tempfile.TemporaryDirectory() as td:
+            body = ("import math\\nfrom src.flock import FlockSim\\n\\n"
+                    "def test_x():\\n    assert True\\n" * 4)
+            (Path(td) / "bad.py").write_text(body)
+            self.assertEqual(detect_malformed_writes(td, ["bad.py"]), ["bad.py"])
+
+    def test_normal_file_is_not_flagged(self):
+        from swarm.pi_agent import detect_malformed_writes
+        with tempfile.TemporaryDirectory() as td:
+            (Path(td) / "ok.py").write_text("def f():\n    return 1\n" * 20)
+            self.assertEqual(detect_malformed_writes(td, ["ok.py"]), [])
+
+    def test_file_mentioning_newline_escape_in_a_string_is_not_flagged(self):
+        from swarm.pi_agent import detect_malformed_writes
+        with tempfile.TemporaryDirectory() as td:
+            (Path(td) / "ok.py").write_text('SEP = "\\n"\n\ndef join(xs):\n    return SEP.join(xs)\n' * 6)
+            self.assertEqual(detect_malformed_writes(td, ["ok.py"]), [])
+
+    def test_feedback_names_the_corrupt_files(self):
+        from swarm.loop_engine import _build_dev_feedback
+        fb = _build_dev_feedback(
+            {"failure_kind": "code", "output": "ERROR collecting src/test_flock.py"},
+            qa_output="VERDICT: FAILED", sec_output="VERDICT: PASSED",
+            judge_output="DECISION: REJECTED", infra_broken=False, wrote_files=True,
+            malformed_writes=["src/test_flock.py"],
+        )
+        self.assertIn("LITERAL ESCAPE SEQUENCES", fb)
+        self.assertIn("src/test_flock.py", fb)

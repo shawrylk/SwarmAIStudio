@@ -54,7 +54,7 @@ from swarm.artifacts import save_artifact_to_disk
 from swarm.rules_engine import format_enforced_rules_prompt
 from swarm.skills_scanner import resolve_and_inject_skill
 from swarm.context7_engine import fetch_latest_doc_context
-from swarm.pi_agent import run_pi_agent, pi_available
+from swarm.pi_agent import run_pi_agent, pi_available, detect_malformed_writes
 from swarm.contracts_engine import format_contracts_prompt_block, scan_and_parse_contracts, validate_cel_invariants
 from swarm.orchestrator import (
     set_dynamic_subagents_roster,
@@ -696,6 +696,7 @@ def _build_dev_feedback(
     judge_output: str,
     infra_broken: bool,
     wrote_files: bool,
+    malformed_writes: Optional[List[str]] = None,
 ) -> str:
     """Assemble retry feedback that the dev agent can actually act on by writing files.
 
@@ -705,6 +706,16 @@ def _build_dev_feedback(
     every remaining attempt on the environment and never writes the feature.
     """
     parts = []
+    if malformed_writes:
+        # Without naming this, the agent only sees an opaque pytest collection
+        # traceback and has no idea the file itself is one long line.
+        parts.append(
+            "=== BLOCKING: FILE WRITTEN WITH LITERAL ESCAPE SEQUENCES ===\n"
+            f"These files contain the two characters backslash-n where real line "
+            f"breaks belong, so they are a single unparseable line: "
+            f"{', '.join(malformed_writes)}.\n"
+            "Rewrite them with actual newlines. Do not escape newlines in file content."
+        )
     if not wrote_files:
         parts.append(
             "=== BLOCKING: NO FILES WERE WRITTEN ===\n"
@@ -849,6 +860,16 @@ Every file you name MUST include its full, production-grade content (Clean Archi
                     f"🛠️ Pi dev agent ran {len(tool_names)} tool call(s): {', '.join(tool_names[:8])}",
                     category="dev",
                 )
+                malformed = detect_malformed_writes(
+                    repo_path, [f["path"] for f in written_files]
+                )
+                task["malformed_writes"] = malformed
+                if malformed:
+                    log_loop_activity(
+                        f"⚠️ {len(malformed)} file(s) written with literal escape sequences "
+                        f"instead of real newlines: {', '.join(malformed)}",
+                        category="dev",
+                    )
         else:
             dev_output = await query_local_slot(
                 dev_prompt,
@@ -1246,6 +1267,7 @@ DECISION: REJECTED (Diagnostics: <concrete diagnostic issues to fix>)
             diagnostic_feedback = _build_dev_feedback(
                 test_result, qa_output, sec_output, judge_output,
                 infra_broken=infra_broken, wrote_files=bool(written_files),
+                malformed_writes=task.get("malformed_writes"),
             )
             
             # Active Lead Advisor Escalation: Ask Advisor / Qwen Oracle for precise remediation plan and extract evolved rules
@@ -1321,6 +1343,7 @@ Analyze this failure and respond in this exact structured format:
             task["diagnostic_feedback"] = _build_dev_feedback(
                 test_result, qa_output, sec_output, judge_output,
                 infra_broken=infra_broken, wrote_files=bool(written_files),
+                malformed_writes=task.get("malformed_writes"),
             )
             log_loop_activity(
                 f"⛔ Task '{task_title}' FAILED the zero-trust gate after {max_retries} attempts "

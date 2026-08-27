@@ -199,6 +199,31 @@ def parse_pi_events(stdout: str, repo_path: str) -> Dict[str, Any]:
     }
 
 
+def detect_malformed_writes(repo_path: str, rel_paths: List[str]) -> List[str]:
+    """Find files written with literal escape sequences instead of real newlines.
+
+    Observed live: the agent emitted a test file whose entire body was one line
+    containing the two characters backslash-n wherever a newline belonged, so
+    pytest failed at collection with an unhelpful import traceback. The gate
+    caught it, but the retry feedback never said why. Naming it explicitly turns
+    an opaque collection error into an actionable instruction.
+    """
+    bad: List[str] = []
+    root = Path(repo_path)
+    for rel in rel_paths:
+        try:
+            text = (root / rel).read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        if not text:
+            continue
+        # A source file of any size that contains no real newline but does contain
+        # the literal two-character sequence is corrupt, not merely minified.
+        if "\\n" in text and "\n" not in text.strip("\n") and len(text) > 120:
+            bad.append(rel)
+    return bad
+
+
 async def run_pi_agent(
     prompt: str,
     repo_path: str,
