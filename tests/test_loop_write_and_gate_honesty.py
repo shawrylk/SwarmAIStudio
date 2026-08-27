@@ -358,3 +358,55 @@ class TestCodeSignalsBeatInfraPatterns(unittest.TestCase):
                       "src/X.cs(1,1): error CS1002: ; expected",
         })
         self.assertEqual(res["failure_kind"], "code")
+
+
+class TestForeignAbsolutePathHandling(unittest.TestCase):
+    """A run wrote 21 files into <repo>/home/shawry/Documents/... because any
+    absolute path that did not resolve inside the repo had its leading slash
+    stripped, which then passed the containment check."""
+
+    def test_recoverable_path_is_rebased_onto_the_real_directory(self):
+        from swarm.git_engine import salvage_foreign_abs_path
+        with tempfile.TemporaryDirectory() as td:
+            r = Path(td)
+            (r / "src" / "DeltaProject.Domain").mkdir(parents=True)
+            self.assertEqual(
+                salvage_foreign_abs_path("/home/u/Documents/GitHub/src/DeltaProject.Domain/X.cs", r),
+                "src/DeltaProject.Domain/X.cs",
+            )
+
+    def test_unrecoverable_path_is_rejected_not_stripped(self):
+        from swarm.git_engine import salvage_foreign_abs_path
+        with tempfile.TemporaryDirectory() as td:
+            r = Path(td)
+            (r / "src" / "DeltaProject.Domain").mkdir(parents=True)
+            # Real location is src/DeltaProject.Domain/; this path omits src/.
+            self.assertIsNone(
+                salvage_foreign_abs_path("/home/u/Documents/DeltaProject.Domain/FishState.cs", r))
+
+    def test_bare_filename_is_never_accepted(self):
+        from swarm.git_engine import salvage_foreign_abs_path
+        with tempfile.TemporaryDirectory() as td:
+            self.assertIsNone(salvage_foreign_abs_path("/tmp/orphan.cs", Path(td)))
+
+    def test_result_is_always_contained_in_the_repo(self):
+        from swarm.git_engine import salvage_foreign_abs_path
+        with tempfile.TemporaryDirectory() as td:
+            r = Path(td)
+            for probe in ("/etc/passwd", "/../../etc/shadow", "/home/u/x/y.cs"):
+                got = salvage_foreign_abs_path(probe, r)
+                if got is not None:
+                    self.assertFalse(Path(got).is_absolute())
+                    (r / got).parent.mkdir(parents=True, exist_ok=True)
+                    self.assertTrue(str((r / got).resolve()).startswith(str(r.resolve())))
+
+    def test_writer_creates_no_bogus_nested_tree(self):
+        from swarm.git_engine import extract_code_blocks_and_write
+        with tempfile.TemporaryDirectory() as td:
+            r = Path(td)
+            (r / "src").mkdir()
+            out = ("<|tool_call_start|>[write(path='/home/shawry/Documents/DeltaProject.Domain/Ghost.cs', "
+                   "content='class Ghost {}')]<|tool_call_end|>")
+            written = extract_code_blocks_and_write(str(r), out)
+            self.assertEqual(written, [])
+            self.assertFalse((r / "home").exists())

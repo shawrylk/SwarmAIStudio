@@ -1897,6 +1897,41 @@ def _parse_tool_call_writes(llm_output: str) -> List[Dict[str, str]]:
     return files
 
 
+def salvage_foreign_abs_path(abs_path: str, repo_root: Path) -> Optional[str]:
+    """Recover a repo-relative path from a hallucinated absolute path, or None.
+
+    Models emit paths like /home/u/Documents/GitHub/src/Foo.Domain/X.cs for a
+    file that really lives at <repo>/src/Foo.Domain/X.cs. The previous fallback
+    simply stripped the leading slash, which then passed the containment check
+    and created a bogus <repo>/home/u/Documents/... tree — 21 files landed there
+    in a single run and counted toward "files written".
+
+    The longest path suffix whose parent directory actually exists in the repo
+    wins. A bare filename is never accepted: without a directory component there
+    is no evidence the model meant the repo root, and guessing drops source files
+    into the top level.
+    """
+    parts = Path(abs_path).parts
+    # Skip the root component: `repo_root / Path("/etc/passwd")` discards
+    # repo_root entirely and would resolve to the real /etc/passwd.
+    start = 1 if parts and parts[0] in ("/", "\\") else 0
+    for i in range(start, len(parts)):
+        cand_parts = parts[i:]
+        if len(cand_parts) < 2:
+            break
+        cand = Path(*cand_parts)
+        if cand.is_absolute():
+            continue
+        target = (repo_root / cand)
+        try:
+            target.resolve().relative_to(repo_root.resolve())
+        except (ValueError, OSError):
+            continue
+        if target.parent.is_dir():
+            return str(cand)
+    return None
+
+
 def extract_code_blocks_and_write(repo_path: str, llm_output: str) -> List[Dict[str, Any]]:
     """
     Extracts code files from LLM output and writes them to the repository.
@@ -1923,9 +1958,22 @@ def extract_code_blocks_and_write(repo_path: str, llm_output: str) -> List[Dict[
                 rebased = Path(clean_path).resolve().relative_to(rp.resolve())
                 clean_path = str(rebased)
             except (ValueError, OSError):
-                clean_path = clean_path.lstrip("/")
+                salvaged = salvage_foreign_abs_path(clean_path, rp)
+                if salvaged is None:
+                    log_event(
+                        "warn", "file_writer",
+                        f"Rejected foreign absolute path (no matching directory in repo): {clean_path}",
+                    )
+                    return None
+                log_event(
+                    "info", "file_writer",
+                    f"Rebased foreign absolute path {clean_path} -> {salvaged}",
+                )
+                clean_path = salvaged
         elif clean_path.startswith("/"):
-            clean_path = clean_path.lstrip("/")
+            # No repository to resolve against; a bare absolute path is not usable.
+            log_event("warn", "file_writer", f"Rejected absolute path with no repo context: {clean_path}")
+            return None
 
         # Strip accidental home/ or foreign repo prefixes if present
         if rp:
