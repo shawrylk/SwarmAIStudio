@@ -21,6 +21,7 @@ import ast
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 from swarm.logger import log_event
+from swarm.config import SWARM_WORKTREES_DIR
 
 def run_git(repo_path: str, args: List[str]) -> Dict[str, Any]:
     if not repo_path:
@@ -1518,6 +1519,113 @@ def _select_dotnet_target(p: Path) -> Optional[str]:
     if projs:
         return projs[0].name
     return None
+
+
+def worktree_root(repo_path: str) -> Path:
+    """Where task worktrees live: under ~/.swarm, never inside the repository."""
+    return SWARM_WORKTREES_DIR / Path(repo_path).name
+
+
+def create_task_worktree(repo_path: str, base_branch: str, task_id: str) -> Dict[str, Any]:
+    """Create an isolated git worktree so one parallel task cannot see another's files.
+
+    Parallel DAG tasks previously shared a single checkout: every task's test run
+    compiled every other task's half-written files, so all five tasks of one run
+    failed on each other's errors regardless of their own correctness. Each task
+    now gets its own branch and working directory.
+    """
+    if not repo_path or not (Path(repo_path) / ".git").exists():
+        return {"success": False, "error": "Not a git repository"}
+
+    safe_id = re.sub(r"[^A-Za-z0-9_.-]", "-", str(task_id))
+    wt_branch = f"swarm/wt-{safe_id}"
+    # Deliberately OUTSIDE the repository. A worktree nested inside it would be
+    # swept into commits by `git add -A` and scanned by the build — nested .cs
+    # files under the repo root are precisely what produced spurious compile
+    # errors in earlier runs.
+    wt_dir = worktree_root(repo_path) / safe_id
+
+    # Reuse is not safe: a stale worktree carries the previous attempt's files.
+    if wt_dir.exists():
+        remove_task_worktree(repo_path, str(wt_dir), wt_branch)
+
+    run_git(repo_path, ["branch", "-D", wt_branch])
+    wt_dir.parent.mkdir(parents=True, exist_ok=True)
+    res = run_git(repo_path, ["worktree", "add", "-b", wt_branch, str(wt_dir), base_branch])
+    if not res.get("success"):
+        return {"success": False, "error": res.get("error") or "worktree add failed"}
+
+    log_event("info", "worktree", f"Created worktree for {task_id} at {wt_dir} (branch {wt_branch})")
+    return {"success": True, "path": str(wt_dir), "branch": wt_branch, "base": base_branch}
+
+
+def remove_task_worktree(repo_path: str, worktree_path: str, worktree_branch: str = "") -> Dict[str, Any]:
+    """Tear down a task worktree and its branch, best-effort."""
+    if not repo_path or not worktree_path:
+        return {"success": False, "error": "Missing paths"}
+    res = run_git(repo_path, ["worktree", "remove", "--force", worktree_path])
+    run_git(repo_path, ["worktree", "prune"])
+    if worktree_branch:
+        run_git(repo_path, ["branch", "-D", worktree_branch])
+    return {"success": bool(res.get("success"))}
+
+
+def integrate_task_worktree(
+    repo_path: str, worktree_branch: str, target_branch: str, message: str
+) -> Dict[str, Any]:
+    """Merge one finished task's worktree branch into the loop branch.
+
+    Called sequentially, never concurrently: whichever task lands first changes
+    the tree the next one merges into. A conflict is reported rather than forced,
+    so the caller can route it into the escalation ladder as a task failure.
+    """
+    if not repo_path:
+        return {"success": False, "error": "Missing repo path", "conflict": False}
+
+    cur = run_git(repo_path, ["branch", "--show-current"]).get("stdout", "").strip()
+    if cur != target_branch:
+        sw = run_git(repo_path, ["checkout", target_branch])
+        if not sw.get("success"):
+            return {"success": False, "error": f"Cannot check out {target_branch}", "conflict": False}
+
+    res = run_git(repo_path, ["merge", "--no-ff", "-m", message, worktree_branch])
+    if res.get("success"):
+        head = run_git(repo_path, ["rev-parse", "--short", "HEAD"]).get("stdout", "").strip()
+        log_event("info", "worktree", f"Integrated {worktree_branch} into {target_branch} ({head})")
+        return {"success": True, "conflict": False, "short_hash": head}
+
+    conflicted = run_git(repo_path, ["diff", "--name-only", "--diff-filter=U"]).get("stdout", "").strip()
+    run_git(repo_path, ["merge", "--abort"])
+    files = [f for f in conflicted.splitlines() if f]
+    log_event("warn", "worktree", f"Merge conflict integrating {worktree_branch}", {"files": files[:10]})
+    return {
+        "success": False,
+        "conflict": bool(files),
+        "conflict_files": files,
+        "error": f"Merge conflict in: {', '.join(files[:5])}" if files else (res.get("error") or "merge failed"),
+    }
+
+
+def cleanup_all_task_worktrees(repo_path: str) -> int:
+    """Remove every leftover swarm task worktree. Returns how many were removed."""
+    if not repo_path or not (Path(repo_path) / ".git").exists():
+        return 0
+    root = worktree_root(repo_path)
+    listing = run_git(repo_path, ["worktree", "list", "--porcelain"]).get("stdout", "") or ""
+    removed = 0
+    for line in listing.splitlines():
+        if not line.startswith("worktree "):
+            continue
+        wt = line.split(" ", 1)[1].strip()
+        if str(root) in wt:
+            remove_task_worktree(repo_path, wt, f"swarm/wt-{Path(wt).name}")
+            removed += 1
+    if root.exists() and not any(root.iterdir()):
+        try:
+            root.rmdir()
+        except OSError:
+            pass
+    return removed
 
 
 def resolve_default_branch(repo_path: str) -> str:

@@ -238,7 +238,11 @@ class TestGateBlocksFabricatedApproval(unittest.TestCase):
                 return out, mock_commit
 
         result, mock_commit = asyncio.run(run())
-        self.assertEqual(result["status"], "failed")
+        # A task that fails its gate is never "completed": it escalates to a tier
+        # that differs in kind ("pending" for another pass) or parks for the
+        # operator ("blocked"). What must never happen is a fabricated approval.
+        self.assertIn(result["status"], ("pending", "blocked"))
+        self.assertNotEqual(result["status"], "completed")
         self.assertTrue(result.get("failure_reasons"))
         mock_commit.assert_not_called()
 
@@ -273,7 +277,11 @@ class TestGateBlocksFabricatedApproval(unittest.TestCase):
                 return out, mock_commit
 
         result, mock_commit = asyncio.run(run())
-        self.assertEqual(result["status"], "failed")
+        # A task that fails its gate is never "completed": it escalates to a tier
+        # that differs in kind ("pending" for another pass) or parks for the
+        # operator ("blocked"). What must never happen is a fabricated approval.
+        self.assertIn(result["status"], ("pending", "blocked"))
+        self.assertNotEqual(result["status"], "completed")
         self.assertEqual(result["files_written"], [])
         self.assertIn("dev wrote no files", result.get("failure_reasons", []))
         mock_commit.assert_not_called()

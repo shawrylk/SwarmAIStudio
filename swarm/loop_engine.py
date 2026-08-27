@@ -29,6 +29,10 @@ from swarm.git_engine import (
     run_git,
     switch_or_create_branch,
     resolve_default_branch,
+    create_task_worktree,
+    remove_task_worktree,
+    integrate_task_worktree,
+    cleanup_all_task_worktrees,
     detect_project_test_runner,
     run_test_suite,
     classify_test_failure,
@@ -546,6 +550,178 @@ Respond ONLY with a valid JSON array of objects with this schema:
 
     return formatted_tasks
 
+# Escalation ladder for a task the local 2.6B executor cannot finish.
+# The point is that each rung differs in KIND, not just in retry count: repeating
+# the same tier against the same model reproduces the same CS0246 errors, which is
+# a spin, not a loop.
+ESCALATION_TIERS = [
+    {
+        "name": "local",
+        "label": "local 2.6B executor",
+        "engine": "local",
+    },
+    {
+        # Same model, but the failure trace is put in front of the Lead Advisor
+        # first and its instructions are injected into the dev prompt.
+        "name": "local+advisor",
+        "label": "local executor with Lead Advisor remediation plan",
+        "engine": "local",
+    },
+    {
+        # A materially stronger model via whichever external CLI is installed.
+        "name": "external",
+        "label": "external reasoning CLI (agy/gemini/claude)",
+        "engine": "external",
+    },
+    {
+        "name": "user",
+        "label": "human operator",
+        "engine": "user",
+    },
+]
+
+
+def current_tier_index(task: Dict[str, Any]) -> int:
+    return min(task.get("escalation_tier", 0), len(ESCALATION_TIERS) - 1)
+
+
+def tier_is_exhausted(task: Dict[str, Any], reasons: List[str]) -> bool:
+    """True when this tier produced the same failure as its previous pass.
+
+    Identical reasons from an identical tier means nothing changed, so another
+    pass at this tier is wasted. This is the guard that keeps "do not stop" from
+    degenerating into an infinite spin over one broken task.
+    """
+    sig = f"{current_tier_index(task)}::{'|'.join(sorted(reasons))}"
+    prev = task.get("last_failure_signature")
+    task["last_failure_signature"] = sig
+    return prev == sig
+
+
+async def escalate_task(task: Dict[str, Any], repo_path: str, reasons: List[str]) -> Dict[str, Any]:
+    """Advance a failed task to the next escalation tier.
+
+    Returns {"blocked": bool, "question": str}. blocked=True means every
+    automated tier is spent and the operator has to answer; the task parks and
+    the scheduler moves on to other work rather than ending the run.
+    """
+    tier_idx = current_tier_index(task)
+    next_idx = min(tier_idx + 1, len(ESCALATION_TIERS) - 1)
+    task["escalation_tier"] = next_idx
+    tier = ESCALATION_TIERS[next_idx]
+    task["escalation_tier_name"] = tier["name"]
+    # Preserve how much effort the finished tier consumed before zeroing the
+    # counter; each tier gets its own attempt budget, but the history matters for
+    # reporting and for spotting a tier that never makes progress.
+    task["attempts_at_last_tier"] = task.get("attempts", 0)
+    task.setdefault("tier_history", []).append({
+        "tier": ESCALATION_TIERS[tier_idx]["name"],
+        "attempts": task.get("attempts", 0),
+        "reasons": list(reasons),
+    })
+    task["attempts"] = 0
+
+    log_loop_activity(
+        f"⬆️ Escalating '{task['title']}' to tier {next_idx + 1}/{len(ESCALATION_TIERS)} "
+        f"({tier['label']}) after: {'; '.join(reasons)}",
+        category="judge",
+    )
+
+    if tier["name"] == "local+advisor":
+        # Put the real failure trace in front of the advisor and carry its plan
+        # into the next dev prompt.
+        question = (
+            f"The implementation of '{task['title']}' failed verification with:\n"
+            f"{'; '.join(reasons)}\n\n"
+            f"Diagnostic trace:\n{(task.get('diagnostic_feedback') or '')[:2500]}\n\n"
+            f"Give a concrete, ordered remediation plan: exactly which files to change, "
+            f"which using/import directives are missing, and which declarations collide. "
+            f"Assume the implementer is a small model that cannot infer context."
+        )
+        plan = await ping_lead_advisor(
+            "Surgical Code Draftsman", "dev", question, task_context=task["description"]
+        )
+        task["remediation_plan"] = plan
+        task.setdefault("advisor_consultations", []).append(
+            {"question": question, "guidance": plan}
+        )
+        return {"blocked": False, "question": ""}
+
+    if tier["name"] == "external":
+        return {"blocked": False, "question": ""}
+
+    # Final tier: the operator.
+    question = (
+        f"Task '{task['title']}' could not be completed after exhausting the local "
+        f"executor, an advisor remediation plan and the external reasoning CLI.\n"
+        f"Unmet gate conditions: {'; '.join(reasons)}\n"
+        f"Files it last touched: {', '.join(task.get('files_written') or []) or '(none)'}\n"
+        f"How should this be handled — narrow the scope, skip it, or change the approach?"
+    )
+    task["blocked_on_user"] = True
+    task["user_question"] = question
+    task["status"] = "blocked"
+    record_user_escalation(task, question)
+    return {"blocked": True, "question": question}
+
+
+def record_user_escalation(task: Dict[str, Any], question: str) -> None:
+    """Surface a question for the operator without halting the run."""
+    with _state_lock:
+        pending = LOOP_STATE.setdefault("pending_user_questions", [])
+        entry = {
+            "task_id": task.get("id"),
+            "task_title": task.get("title"),
+            "question": question,
+            "asked_at": int(time.time() * 1000),
+            "answered": False,
+            "answer": "",
+        }
+        if not any(q.get("task_id") == entry["task_id"] and not q.get("answered") for q in pending):
+            pending.append(entry)
+        persist_active_loop_state()
+    log_loop_activity(
+        f"🙋 OPERATOR INPUT NEEDED for '{task.get('title')}' — the loop is continuing with "
+        f"other work. Question: {question[:180]}",
+        category="loop",
+    )
+
+
+def answer_user_question(task_id: str, answer: str) -> Dict[str, Any]:
+    """Record an operator answer and return the task to the queue.
+
+    The answer becomes guidance for the next attempt, and the task restarts at
+    the advisor tier rather than the bare local tier — the operator's input is
+    context the small model could not derive on its own.
+    """
+    with _state_lock:
+        for q in LOOP_STATE.get("pending_user_questions", []):
+            if q.get("task_id") == task_id and not q.get("answered"):
+                q["answered"] = True
+                q["answer"] = answer
+                q["answered_at"] = int(time.time() * 1000)
+                break
+        for t in LOOP_STATE.get("tasks", []):
+            if t.get("id") != task_id:
+                continue
+            t["blocked_on_user"] = False
+            t["status"] = "pending"
+            t["attempts"] = 0
+            t["escalation_tier"] = 1  # resume with advisor-grade guidance
+            t["last_failure_signature"] = None
+            t["operator_guidance"] = answer
+            t["remediation_plan"] = (
+                f"OPERATOR INSTRUCTION (authoritative, follow exactly):\n{answer}"
+            )
+            persist_active_loop_state()
+            log_loop_activity(
+                f"✅ Operator answered '{t.get('title')}'. Requeued with their instruction.",
+                category="loop",
+            )
+            return {"success": True, "task_id": task_id}
+    return {"success": False, "error": f"No pending question for task {task_id}"}
+
+
 def dev_engine_is_pi(repo_path: str) -> bool:
     """Whether this dev task should run through Pi's agentic tool loop.
 
@@ -601,6 +777,15 @@ DEV_PI_SYSTEM = (
     "repository. Always read an existing file before editing it, and make the smallest "
     "correct change. Never replace a file you have not read."
 )
+
+DEV_EXTERNAL_CONTRACT = """
+OUTPUT CONTRACT:
+You cannot run tools. Emit the COMPLETE content of every file to create or modify
+as write() calls:
+<|tool_call_start|>[write(path='relative/path.ext', content='<COMPLETE FILE BODY>')]<|tool_call_end|>
+Use relative repository paths. Include every required import/using directive.
+Do not omit unchanged parts of a file you are rewriting.
+"""
 
 DEV_PI_REPAIR_CONTRACT = """
 YOUR PREVIOUS ATTEMPT CHANGED NO FILES.
@@ -746,7 +931,8 @@ async def execute_zero_trust_task(
     repo_block: str,
     repo_path: str,
     research_brief: str,
-    github_issue_num: Optional[int] = None
+    github_issue_num: Optional[int] = None,
+    work_path: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Zero-Trust Multi-Agent Handoff Pipeline with Retry Loop:
@@ -754,6 +940,12 @@ async def execute_zero_trust_task(
     Security Threat Auditor (Real Git Diff Review) -> Adversarial Oracle Cross-Check -> Auto-Judge Gate -> Real Git Commit.
     If flaws or test failures are detected, Auto-Judge rejects the deliverable with real test traces back to Dev (up to 3 retries).
     """
+    # Every filesystem and verification operation targets work_path — the task's
+    # isolated worktree when running in parallel, or the repo itself when serial.
+    # repo_path stays reserved for shared, repo-level concerns (issues, boards,
+    # skills and rules discovery), which must not be redirected into a worktree.
+    work_path = work_path or repo_path
+
     role = task["role"]
     task_title = task["title"]
     max_retries = 3
@@ -809,6 +1001,8 @@ ACCEPTANCE CRITERIA: {task['acceptance_criteria']}
 
 {f"=== PREVIOUS ATTEMPT DIAGNOSTIC REJECTION & TEST FAILURE TRACE (MUST FIX ALL): ===\n{diagnostic_feedback}\n========================================================" if diagnostic_feedback else ""}
 
+{f"=== AUTHORITATIVE REMEDIATION PLAN — FOLLOW THIS EXACTLY: ===\n{task['remediation_plan']}\n=========================================================" if task.get("remediation_plan") else ""}
+
 """
 
         dev_prompt = dev_context + f"""
@@ -826,21 +1020,45 @@ Every file you name MUST include its full, production-grade content (Clean Archi
 """
         # Code generation needs a large budget — files get truncated mid-write at the
         # default 2048 tokens, which is the #1 cause of "no code produced".
-        use_pi = dev_engine_is_pi(repo_path)
-        task["dev_engine"] = "pi" if use_pi else "raw"
+        tier = ESCALATION_TIERS[current_tier_index(task)]
+        use_external = tier["engine"] == "external"
+        use_pi = (not use_external) and dev_engine_is_pi(work_path)
+        task["dev_engine"] = "external" if use_external else ("pi" if use_pi else "raw")
 
-        if use_pi:
+        if use_external:
+            # The local 2.6B model has already failed this task twice, with and
+            # without a remediation plan. Hand the drafting to a materially
+            # stronger model via whichever external CLI is installed; it still
+            # emits write() calls that the normal extractor applies.
+            log_loop_activity(
+                f"🧠 Tier 3: drafting '{task_title}' with the external reasoning CLI "
+                f"(local executor exhausted).",
+                category="dev",
+            )
+            dev_output = await query_gemini(dev_context + DEV_EXTERNAL_CONTRACT)
+            written_files = extract_code_blocks_and_write(work_path, dev_output)
+            if not written_files:
+                log_loop_activity(
+                    "⚠️ External CLI produced no applicable writes; retrying via the local path.",
+                    category="dev",
+                )
+                task["dev_engine"] = "raw (external produced nothing)"
+                dev_output = await query_local_slot(
+                    dev_prompt, system=DEV_WRITE_ONLY_SYSTEM, max_tokens=8192
+                )
+                written_files = extract_code_blocks_and_write(work_path, dev_output)
+        elif use_pi:
             # Agentic path: Pi drives a real read/edit/write loop, so the agent can
             # inspect a file before changing it. This is what stops a refactor task
             # from becoming a blind full-file overwrite.
             pi_res = await run_pi_agent(
                 dev_context + DEV_PI_CONTRACT,
-                repo_path,
+                work_path,
                 system=DEV_PI_SYSTEM,
                 timeout=PI_AGENT_TIMEOUT,
             )
             dev_output = pi_res.get("text") or ""
-            written_files = _pi_written_files(pi_res, repo_path)
+            written_files = _pi_written_files(pi_res, work_path)
             if not pi_res.get("success"):
                 # Fall back rather than fail the attempt outright: a Pi launch or
                 # timeout problem is not evidence about the deliverable.
@@ -853,7 +1071,7 @@ Every file you name MUST include its full, production-grade content (Clean Archi
                 dev_output = await query_local_slot(
                     dev_prompt, system=DEV_WRITE_ONLY_SYSTEM, max_tokens=8192
                 )
-                written_files = extract_code_blocks_and_write(repo_path, dev_output)
+                written_files = extract_code_blocks_and_write(work_path, dev_output)
             else:
                 tool_names = [t.get("name") for t in pi_res.get("tool_calls", [])]
                 log_loop_activity(
@@ -861,7 +1079,7 @@ Every file you name MUST include its full, production-grade content (Clean Archi
                     category="dev",
                 )
                 malformed = detect_malformed_writes(
-                    repo_path, [f["path"] for f in written_files]
+                    work_path, [f["path"] for f in written_files]
                 )
                 task["malformed_writes"] = malformed
                 if malformed:
@@ -876,7 +1094,7 @@ Every file you name MUST include its full, production-grade content (Clean Archi
                 system=DEV_WRITE_ONLY_SYSTEM,
                 max_tokens=8192,
             )
-            written_files = extract_code_blocks_and_write(repo_path, dev_output)
+            written_files = extract_code_blocks_and_write(work_path, dev_output)
 
         task["output"] = dev_output
         
@@ -898,19 +1116,19 @@ Every file you name MUST include its full, production-grade content (Clean Archi
             if task.get("dev_engine") == "pi":
                 pi_res = await run_pi_agent(
                     dev_context + DEV_PI_REPAIR_CONTRACT,
-                    repo_path,
+                    work_path,
                     system=DEV_PI_SYSTEM,
                     timeout=PI_AGENT_TIMEOUT,
                 )
                 dev_output = pi_res.get("text") or dev_output
-                written_files = _pi_written_files(pi_res, repo_path)
+                written_files = _pi_written_files(pi_res, work_path)
             else:
                 dev_output = await query_local_slot(
                     _build_write_repair_prompt(dev_prompt, dev_output, requested),
                     system=DEV_WRITE_ONLY_SYSTEM,
                     max_tokens=8192,
                 )
-                written_files = extract_code_blocks_and_write(repo_path, dev_output)
+                written_files = extract_code_blocks_and_write(work_path, dev_output)
 
         task["output"] = dev_output
         task["files_written"] = [f["path"] for f in written_files]
@@ -937,7 +1155,7 @@ Every file you name MUST include its full, production-grade content (Clean Archi
         # "pass" -> reject a pass whose runner cannot cover the deliverable's
         # language. Without the last two, `unittest discover` running one leftover
         # placeholder reported "PASSED" for C# that never compiled.
-        test_result = run_test_suite(repo_path)
+        test_result = run_test_suite(work_path)
         test_result = classify_test_failure(test_result)
         test_result = detect_vacuous_pass(test_result)
         test_result = check_runner_covers_deliverable(
@@ -974,7 +1192,7 @@ Every file you name MUST include its full, production-grade content (Clean Archi
             )
 
         # Capture real working tree diff
-        working_diff = get_working_diff(repo_path)
+        working_diff = get_working_diff(work_path)
 
         qa_skill = resolve_and_inject_skill("qa", task["description"], repo_path)
         sec_skill = resolve_and_inject_skill("security", task["description"], repo_path)
@@ -1331,13 +1549,12 @@ Analyze this failure and respond in this exact structured format:
             await asyncio.sleep(0.5)
             continue
         elif not is_approved:
-            # Retries exhausted and the gate still says no. This branch used to
-            # fall through to the success path — marking the task "completed",
-            # committing, flipping the board card to Done and posting "APPROVED by
-            # Auto-Judge" while qa_passed was False. That fabricated verdict is
-            # what let unverified junk reach the merge step. Terminal state is now
-            # an explicit failure that commits nothing.
-            task["status"] = "failed"
+            # Retries exhausted at this escalation tier. This branch used to fall
+            # through to the success path — marking the task "completed",
+            # committing and posting "APPROVED by Auto-Judge" while qa_passed was
+            # False. It never commits now; instead the task escalates to a tier
+            # that differs in kind, and only parks for the operator once every
+            # automated tier is spent.
             task["stage"] = "gate_failed"
             task["failure_reasons"] = gate_reasons
             task["diagnostic_feedback"] = _build_dev_feedback(
@@ -1345,19 +1562,35 @@ Analyze this failure and respond in this exact structured format:
                 infra_broken=infra_broken, wrote_files=bool(written_files),
                 malformed_writes=task.get("malformed_writes"),
             )
+            tier_label = ESCALATION_TIERS[current_tier_index(task)]["label"]
             log_loop_activity(
-                f"⛔ Task '{task_title}' FAILED the zero-trust gate after {max_retries} attempts "
-                f"({'; '.join(gate_reasons)}). No commit, no merge.",
+                f"⛔ Task '{task_title}' failed the zero-trust gate after {max_retries} attempts "
+                f"on {tier_label} ({'; '.join(gate_reasons)}). No commit, no merge.",
                 category="judge",
             )
+            repeated = tier_is_exhausted(task, gate_reasons)
+            esc = await escalate_task(task, repo_path, gate_reasons)
+            if esc["blocked"]:
+                task["status"] = "blocked"
+            else:
+                # Requeue for the scheduler to run at the new tier.
+                task["status"] = "pending"
+                if repeated:
+                    log_loop_activity(
+                        f"↻ '{task_title}' produced an identical failure at the previous tier; "
+                        f"the new tier changes engine or guidance rather than repeating.",
+                        category="judge",
+                    )
             board = LOOP_STATE.get("project_board", {})
             if board.get("number") and task.get("board_item_id"):
                 gh_project_set_status(repo_path, board["owner"], board["number"], task["board_item_id"], status="Todo")
             if github_issue_num:
+                status_line = ("parked for operator input" if esc["blocked"]
+                               else f"escalated to {ESCALATION_TIERS[current_tier_index(task)]['label']}")
                 gh_issue_comment(
                     repo_path,
                     github_issue_num,
-                    f"⛔ Task '{task_title}' FAILED after {max_retries} attempts.\n\n"
+                    f"⛔ Task '{task_title}' failed after {max_retries} attempts — {status_line}.\n\n"
                     f"### Unmet gate conditions\n" + "\n".join(f"- {r}" for r in gate_reasons)
                 )
             persist_active_loop_state()
@@ -1371,9 +1604,9 @@ Analyze this failure and respond in this exact structured format:
             task["status"] = "completed"
             
             # Real Git Commit: Commit changes made during this task on the isolated branch
-            if repo_path and (Path(repo_path) / ".git").exists():
+            if work_path and (Path(work_path) / ".git").exists():
                 commit_msg = f"feat({task.get('role', 'dev')}): {task_title} [Swarm Task #{task['id']}]"
-                commit_res = commit_changes(repo_path, commit_msg)
+                commit_res = commit_changes(work_path, commit_msg)
                 if commit_res.get("committed"):
                     task["commit_hash"] = commit_res.get("commit_hash", "")
                     task["short_hash"] = commit_res.get("short_hash", "")
@@ -1419,6 +1652,13 @@ async def _async_loop_runner():
         
         ctx = extract_deep_repo_context(repo_path)
         repo_block = format_repo_prompt_block(ctx)
+        base_branch = ""
+
+        # A killed run can leave worktrees registered; a stale one would hand the
+        # next task the previous attempt's files.
+        stale = cleanup_all_task_worktrees(repo_path)
+        if stale:
+            log_loop_activity(f"🧹 Removed {stale} stale task worktree(s) from a previous run.", category="git")
 
         # 0. Initialize Swarm Topology & Git Branch Isolation
         set_dynamic_subagents_roster(SWARM_LOOP_ROSTER)
@@ -1562,18 +1802,47 @@ async def _async_loop_runner():
                 break
 
             completed_ids = {t["id"] for t in tasks if t.get("status") == "completed"}
-            if len(completed_ids) == len(tasks):
+            blocked_tasks = [t for t in tasks if t.get("status") == "blocked"]
+            settled = len(completed_ids) + len(blocked_tasks)
+            if settled == len(tasks):
+                if blocked_tasks:
+                    log_loop_activity(
+                        f"⏸️ {len(blocked_tasks)} task(s) are waiting on operator input; "
+                        f"every other task is done. Answer the pending question(s) to resume.",
+                        category="loop",
+                    )
                 break
 
-            # Find all pending/in_progress tasks whose dependencies are satisfied
+            if LOOP_STATE.get("iteration", 0) >= LOOP_STATE.get("max_iterations", 20):
+                log_loop_activity(
+                    f"🛑 Reached max_iterations ({LOOP_STATE.get('max_iterations')}). "
+                    f"Stopping to avoid an unbounded spin; raise max_iterations to continue.",
+                    category="loop",
+                )
+                break
+
+            # Ready = dependencies satisfied and not parked on the operator. A
+            # task that failed its gate is requeued as "pending" at a higher
+            # escalation tier, so failure no longer empties this list and ends the
+            # run — which is what terminated the 5-task run after one pass.
             ready_tasks = [
                 t for t in tasks
                 if t.get("status") in ("pending", "in_progress")
+                and not t.get("blocked_on_user")
                 and all(dep in completed_ids for dep in t.get("dependencies", []))
             ]
 
             if not ready_tasks:
-                # If no tasks are ready and not all completed, check for unresolvable dependencies or completed run
+                unsatisfiable = [
+                    t["title"] for t in tasks
+                    if t.get("status") in ("pending", "in_progress") and not t.get("blocked_on_user")
+                ]
+                if unsatisfiable:
+                    log_loop_activity(
+                        f"⚠️ {len(unsatisfiable)} task(s) can never become ready — their "
+                        f"dependencies are blocked or failed: {', '.join(unsatisfiable[:5])}.",
+                        category="loop",
+                    )
                 break
 
             if PARALLEL_TASK_EXECUTION and len(ready_tasks) > 1:
@@ -1586,20 +1855,80 @@ async def _async_loop_runner():
                     LOOP_STATE["current_task_id"] = batch[0]["id"]
                     persist_active_loop_state()
 
+                loop_branch_now = LOOP_STATE.get("git_branch") or base_branch
+
                 async def _run_parallel_task_node(t_node):
-                    res = await execute_zero_trust_task(
-                        t_node,
-                        repo_block=repo_block,
-                        repo_path=repo_path,
-                        research_brief=research_brief,
-                        github_issue_num=github_issue_num
-                    )
-                    with _state_lock:
-                        LOOP_STATE["iteration"] = LOOP_STATE.get("iteration", 0) + 1
-                        persist_active_loop_state()
+                    # Each concurrent task gets its own worktree. Sharing one
+                    # checkout meant every task's test run compiled every other
+                    # task's half-written files, so all five tasks of a run failed
+                    # on each other's errors regardless of their own correctness.
+                    wt = create_task_worktree(repo_path, loop_branch_now, t_node["id"])
+                    work = wt.get("path") if wt.get("success") else None
+                    if not work:
+                        log_loop_activity(
+                            f"⚠️ Could not isolate '{t_node['title']}' in a worktree "
+                            f"({wt.get('error')}); running against the shared tree.",
+                            category="git",
+                        )
+                    t_node["worktree"] = work or ""
+                    t_node["worktree_branch"] = wt.get("branch", "") if work else ""
+                    try:
+                        res = await execute_zero_trust_task(
+                            t_node,
+                            repo_block=repo_block,
+                            repo_path=repo_path,
+                            research_brief=research_brief,
+                            github_issue_num=github_issue_num,
+                            work_path=work,
+                        )
+                    finally:
+                        with _state_lock:
+                            LOOP_STATE["iteration"] = LOOP_STATE.get("iteration", 0) + 1
+                            persist_active_loop_state()
                     return res
 
                 await asyncio.gather(*(_run_parallel_task_node(t) for t in batch))
+
+                # Integrate finished worktrees ONE AT A TIME: whichever lands
+                # first changes the tree the next merges into, so a parallel merge
+                # would race. A conflict is a task failure that re-enters the
+                # escalation ladder, not a crash.
+                for t_node in batch:
+                    wt_branch = t_node.get("worktree_branch")
+                    if not wt_branch:
+                        continue
+                    if t_node.get("status") == "completed":
+                        integ = integrate_task_worktree(
+                            repo_path, wt_branch, loop_branch_now,
+                            f"merge({t_node.get('role','dev')}): {t_node['title']} [Swarm Task #{t_node['id']}]",
+                        )
+                        if integ.get("success"):
+                            log_loop_activity(
+                                f"🔀 Integrated '{t_node['title']}' into '{loop_branch_now}' "
+                                f"({integ.get('short_hash')}).",
+                                category="git",
+                            )
+                        else:
+                            reasons = [f"worktree merge conflict in {', '.join(integ.get('conflict_files') or ['unknown'])}"]
+                            t_node["failure_reasons"] = reasons
+                            t_node["diagnostic_feedback"] = (
+                                "=== BLOCKING: YOUR CHANGES CONFLICT WITH ANOTHER TASK ===\n"
+                                f"These files were changed concurrently by another task and could "
+                                f"not be merged: {', '.join(integ.get('conflict_files') or [])}.\n"
+                                "Re-read the current contents of those files and reapply your change "
+                                "on top of what is already there."
+                            )
+                            log_loop_activity(
+                                f"⚠️ '{t_node['title']}' passed its gate but could not merge: "
+                                f"{integ.get('error')}. Escalating.",
+                                category="git",
+                            )
+                            esc = await escalate_task(t_node, repo_path, reasons)
+                            t_node["status"] = "blocked" if esc["blocked"] else "pending"
+                    remove_task_worktree(repo_path, t_node.get("worktree", ""), wt_branch)
+                    t_node["worktree"] = ""
+                    t_node["worktree_branch"] = ""
+                persist_active_loop_state()
                 with _state_lock:
                     LOOP_STATE["current_task_ids"] = []
                     persist_active_loop_state()
@@ -1628,7 +1957,7 @@ async def _async_loop_runner():
 
         # 5. Phase 4: Final Synthesis, Deliverable Sign-off & Merge to Main
         all_completed = all(t.get("status") == "completed" for t in tasks) if tasks else False
-        failed_tasks = [t for t in tasks if t.get("status") == "failed"]
+        failed_tasks = [t for t in tasks if t.get("status") in ("failed", "blocked")]
         infra_blockers = LOOP_STATE.get("infra_blockers", []) or []
 
         if failed_tasks:
@@ -1643,20 +1972,29 @@ async def _async_loop_runner():
             LOOP_STATE["active_subagents"] = []
             LOOP_STATE["current_task_id"] = None
             LOOP_STATE["current_task_ids"] = []
-            LOOP_STATE["final_summary"] = f"Loop stopped: {len(failed_tasks)} of {len(tasks)} task(s) failed zero-trust verification."
+            blocked_n = sum(1 for t in failed_tasks if t.get("status") == "blocked")
+            LOOP_STATE["final_summary"] = (
+                f"Loop paused: {len(failed_tasks)} of {len(tasks)} task(s) did not pass zero-trust "
+                f"verification"
+                + (f"; {blocked_n} awaiting operator input." if blocked_n else ".")
+            )
             persist_active_loop_state()
 
             log_loop_activity(
-                f"⛔ {len(failed_tasks)}/{len(tasks)} task(s) FAILED the zero-trust gate. "
+                f"⛔ {len(failed_tasks)}/{len(tasks)} task(s) did not pass the zero-trust gate. "
                 f"NOT merging into '{LOOP_STATE.get('target_branch', 'main')}'. "
                 f"Branch '{LOOP_STATE.get('git_branch', '')}' is preserved for inspection.",
                 category="loop",
             )
             for t in failed_tasks:
+                label = "AWAITING YOUR INPUT" if t.get("status") == "blocked" else "unmet"
                 log_loop_activity(
-                    f"   • '{t.get('title')}': {'; '.join(t.get('failure_reasons', []) or ['unspecified'])}",
+                    f"   • [{label}] '{t.get('title')}': "
+                    f"{'; '.join(t.get('failure_reasons', []) or ['unspecified'])}",
                     category="loop",
                 )
+                if t.get("user_question"):
+                    log_loop_activity(f"       ❓ {t['user_question']}", category="loop")
             for b in infra_blockers:
                 log_loop_activity(
                     f"   🚧 Host blocker ({b.get('runner')}): {b.get('reason')}",
@@ -1829,6 +2167,7 @@ Provide an authoritative Executive Summary, Architecture Implementation Breakdow
         update_agent_status("orchestrator", "gemini", "idle", "Awaiting user task...")
 
     except asyncio.CancelledError:
+        cleanup_all_task_worktrees(repo_path)
         log_loop_activity("Loop stopped by user.", category="loop")
         LOOP_STATE["status"] = "idle"
         LOOP_STATE["active_subagent"] = None

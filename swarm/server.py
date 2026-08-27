@@ -84,6 +84,7 @@ from swarm.loop_engine import (
     pause_loop,
     resume_loop,
     stop_loop,
+    answer_user_question,
     ping_lead_advisor,
     async_transfer_advisor_to_loop,
     transfer_advisor_to_loop,
@@ -228,6 +229,16 @@ class SwarmHandler(BaseHTTPRequestHandler):
             self._serve_sse()
 
         # 4. Autonomous Loop State & Sessions
+        elif parsed.path == '/api/loop/questions':
+            # Questions the escalation ladder parked for the operator. The run
+            # keeps working on other tasks while these are outstanding.
+            st = get_loop_state()
+            qs_all = st.get("pending_user_questions", []) or []
+            self._send_json({
+                "pending": [q for q in qs_all if not q.get("answered")],
+                "answered": [q for q in qs_all if q.get("answered")],
+            })
+
         elif parsed.path == '/api/loop/status':
             self._send_json(get_loop_state())
 
@@ -424,6 +435,17 @@ class SwarmHandler(BaseHTTPRequestHandler):
 
         elif parsed.path == '/api/loop/stop':
             self._send_json(stop_loop())
+
+        elif parsed.path == '/api/loop/answer':
+            # Answer a task the escalation ladder parked for the operator. The
+            # answer becomes authoritative guidance and the task is requeued, so
+            # a run that hit the end of its automated tiers can continue.
+            task_id = (payload.get("task_id") or "").strip()
+            answer = (payload.get("answer") or "").strip()
+            if not task_id or not answer:
+                self._send_json({"success": False, "error": "task_id and answer are required"}, status=400)
+            else:
+                self._send_json(answer_user_question(task_id, answer))
 
         elif parsed.path == '/api/loop/sessions/new':
             title = payload.get("title", "New Auto-Dev Loop")

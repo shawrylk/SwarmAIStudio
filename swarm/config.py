@@ -33,6 +33,7 @@ SWARM_DIR = Path.home() / ".swarm"
 SESSIONS_DIR = SWARM_DIR / "sessions"
 LOOP_SESSIONS_DIR = SWARM_DIR / "loop_sessions"
 ARTIFACTS_DIR = SWARM_DIR / "artifacts"
+SWARM_WORKTREES_DIR = SWARM_DIR / "worktrees"
 RULES_DIR = SWARM_DIR / "rules"
 GLOBAL_RULES_FILE = SWARM_DIR / "global_rules.md"
 MODELS_CONFIG_FILE = SWARM_DIR / "model_assignments.json"
@@ -41,6 +42,7 @@ SWARM_DIR.mkdir(parents=True, exist_ok=True)
 SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
 LOOP_SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
 ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
+SWARM_WORKTREES_DIR.mkdir(parents=True, exist_ok=True)
 RULES_DIR.mkdir(parents=True, exist_ok=True)
 
 # Package paths

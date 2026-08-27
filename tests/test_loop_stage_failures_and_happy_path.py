@@ -190,7 +190,11 @@ class TestLoopHappyPathAndStageFailures(unittest.TestCase):
                 return out, mock_commit
 
         result, mock_commit = asyncio.run(run())
-        self.assertEqual(result["status"], "failed")
+        # A task that fails its gate is never "completed": it escalates to a tier
+        # that differs in kind ("pending" for another pass) or parks for the
+        # operator ("blocked"). What must never happen is a fabricated approval.
+        self.assertIn(result["status"], ("pending", "blocked"))
+        self.assertNotEqual(result["status"], "completed")
         self.assertEqual(result["files_written"], [])
         self.assertIn("dev wrote no files", result.get("failure_reasons", []))
         mock_commit.assert_not_called()
@@ -230,7 +234,11 @@ class TestLoopHappyPathAndStageFailures(unittest.TestCase):
                 return out, mock_commit
 
         result, mock_commit = asyncio.run(run())
-        self.assertEqual(result["status"], "failed")
+        # A task that fails its gate is never "completed": it escalates to a tier
+        # that differs in kind ("pending" for another pass) or parks for the
+        # operator ("blocked"). What must never happen is a fabricated approval.
+        self.assertIn(result["status"], ("pending", "blocked"))
+        self.assertNotEqual(result["status"], "completed")
         self.assertFalse(result.get("qa_passed"))
         self.assertIn("QA verdict not PASSED", result.get("failure_reasons", []))
         mock_commit.assert_not_called()
@@ -270,7 +278,11 @@ class TestLoopHappyPathAndStageFailures(unittest.TestCase):
                 return out, mock_commit
 
         result, mock_commit = asyncio.run(run())
-        self.assertEqual(result["status"], "failed")
+        # A task that fails its gate is never "completed": it escalates to a tier
+        # that differs in kind ("pending" for another pass) or parks for the
+        # operator ("blocked"). What must never happen is a fabricated approval.
+        self.assertIn(result["status"], ("pending", "blocked"))
+        self.assertNotEqual(result["status"], "completed")
         self.assertFalse(result.get("qa_passed"))
         self.assertTrue(any("infrastructure" in r for r in result.get("failure_reasons", [])))
         mock_commit.assert_not_called()
@@ -310,7 +322,11 @@ class TestLoopHappyPathAndStageFailures(unittest.TestCase):
                 return out, mock_commit
 
         result, mock_commit = asyncio.run(run())
-        self.assertEqual(result["status"], "failed")
+        # A task that fails its gate is never "completed": it escalates to a tier
+        # that differs in kind ("pending" for another pass) or parks for the
+        # operator ("blocked"). What must never happen is a fabricated approval.
+        self.assertIn(result["status"], ("pending", "blocked"))
+        self.assertNotEqual(result["status"], "completed")
         self.assertFalse(result.get("security_passed"))
         self.assertIn("security verdict not PASSED", result.get("failure_reasons", []))
         mock_commit.assert_not_called()
@@ -350,7 +366,11 @@ class TestLoopHappyPathAndStageFailures(unittest.TestCase):
                 return out, mock_commit
 
         result, mock_commit = asyncio.run(run())
-        self.assertEqual(result["status"], "failed")
+        # A task that fails its gate is never "completed": it escalates to a tier
+        # that differs in kind ("pending" for another pass) or parks for the
+        # operator ("blocked"). What must never happen is a fabricated approval.
+        self.assertIn(result["status"], ("pending", "blocked"))
+        self.assertNotEqual(result["status"], "completed")
         self.assertIn("auto-judge did not issue DECISION: APPROVED", result.get("failure_reasons", []))
         mock_commit.assert_not_called()
 
@@ -389,8 +409,14 @@ class TestLoopHappyPathAndStageFailures(unittest.TestCase):
                 return out, mock_commit
 
         result, mock_commit = asyncio.run(run())
-        self.assertEqual(result["status"], "failed")
-        self.assertEqual(result["attempts"], 3)
+        # A task that fails its gate is never "completed": it escalates to a tier
+        # that differs in kind ("pending" for another pass) or parks for the
+        # operator ("blocked"). What must never happen is a fabricated approval.
+        self.assertIn(result["status"], ("pending", "blocked"))
+        self.assertNotEqual(result["status"], "completed")
+        # attempts resets per escalation tier; the spent budget is recorded.
+        self.assertEqual(result["attempts_at_last_tier"], 3)
+        self.assertEqual(result["tier_history"][0]["attempts"], 3)
         self.assertIn("auto-judge did not issue DECISION: APPROVED", result.get("failure_reasons", []))
         mock_commit.assert_not_called()
 
