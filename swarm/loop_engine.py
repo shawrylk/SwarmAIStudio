@@ -240,19 +240,56 @@ _pause_event.set()
 _stop_flag = False
 
 def get_loop_state() -> Dict[str, Any]:
-    global LOOP_STATE
+    global LOOP_STATE, _loop_thread
     with _state_lock:
         _ensure_loop_state_keys(LOOP_STATE)
+        # Self-healing watchdog: If state claims to be "running" or "recovering"
+        # but no background worker thread exists, transition state to an honest terminal/interrupted status.
+        if LOOP_STATE.get("status") in ("running", "recovering"):
+            if _loop_thread is None:
+                tasks = LOOP_STATE.get("tasks", [])
+                if tasks and all(t.get("status") == "completed" for t in tasks):
+                    LOOP_STATE["status"] = "completed"
+                elif any(t.get("status") == "failed" for t in tasks):
+                    LOOP_STATE["status"] = "failed"
+                elif not LOOP_STATE.get("goal"):
+                    LOOP_STATE["status"] = "idle"
+                else:
+                    LOOP_STATE["status"] = "interrupted"
+                LOOP_STATE["active_subagent"] = None
+                LOOP_STATE["active_subagents"] = []
+                LOOP_STATE["current_task_id"] = None
+                LOOP_STATE["current_task_ids"] = []
+                persist_active_loop_state()
         return LOOP_STATE
 
 def select_loop_session(session_id: str) -> Dict[str, Any]:
-    global LOOP_STATE
+    global LOOP_STATE, _loop_thread
     with _state_lock:
         loaded = load_loop_session(session_id)
         if loaded:
             LOOP_STATE = _ensure_loop_state_keys(loaded)
-            return LOOP_STATE
-        _ensure_loop_state_keys(LOOP_STATE)
+        else:
+            _ensure_loop_state_keys(LOOP_STATE)
+        
+        # If the loaded session claims to be "running", verify if it is actually the currently running thread
+        if LOOP_STATE.get("status") in ("running", "recovering"):
+            is_active_thread = (_loop_thread is not None and LOOP_STATE.get("id") == session_id)
+            if not is_active_thread:
+                tasks = LOOP_STATE.get("tasks", [])
+                if tasks and all(t.get("status") == "completed" for t in tasks):
+                    LOOP_STATE["status"] = "completed"
+                elif any(t.get("status") == "failed" for t in tasks):
+                    LOOP_STATE["status"] = "failed"
+                elif not LOOP_STATE.get("goal"):
+                    LOOP_STATE["status"] = "idle"
+                else:
+                    LOOP_STATE["status"] = "interrupted"
+                LOOP_STATE["active_subagent"] = None
+                LOOP_STATE["active_subagents"] = []
+                LOOP_STATE["current_task_id"] = None
+                LOOP_STATE["current_task_ids"] = []
+                persist_active_loop_state()
         return LOOP_STATE
 
 def log_loop_activity(message: str, category: str = "loop", is_active: bool = False):
@@ -1395,6 +1432,15 @@ async def _async_loop_runner():
             LOOP_STATE["produced_code"] = any(t.get("files_written") for t in tasks)
             LOOP_STATE["files_written_total"] = sum(len(t.get("files_written", []) or []) for t in tasks)
             LOOP_STATE["failed_task_count"] = len(failed_tasks)
+            LOOP_STATE["status"] = "failed"
+            LOOP_STATE["completed_at"] = int(time.time() * 1000)
+            LOOP_STATE["active_subagent"] = None
+            LOOP_STATE["active_subagents"] = []
+            LOOP_STATE["current_task_id"] = None
+            LOOP_STATE["current_task_ids"] = []
+            LOOP_STATE["final_summary"] = f"Loop stopped: {len(failed_tasks)} of {len(tasks)} task(s) failed zero-trust verification."
+            persist_active_loop_state()
+
             log_loop_activity(
                 f"⛔ {len(failed_tasks)}/{len(tasks)} task(s) FAILED the zero-trust gate. "
                 f"NOT merging into '{LOOP_STATE.get('target_branch', 'main')}'. "
@@ -1411,6 +1457,17 @@ async def _async_loop_runner():
                     f"   🚧 Host blocker ({b.get('runner')}): {b.get('reason')}",
                     category="loop",
                 )
+        elif not all_completed and not _stop_flag and LOOP_STATE.get("status") in ("running", "recovering"):
+            LOOP_STATE["status"] = "failed"
+            LOOP_STATE["completed_at"] = int(time.time() * 1000)
+            LOOP_STATE["active_subagent"] = None
+            LOOP_STATE["active_subagents"] = []
+            LOOP_STATE["current_task_id"] = None
+            LOOP_STATE["current_task_ids"] = []
+            reason = "No tasks were scheduled or tasks could not proceed due to unresolved dependencies." if not tasks else "Task pipeline stalled before full completion."
+            LOOP_STATE["final_summary"] = f"Loop stopped: {reason}"
+            persist_active_loop_state()
+            log_loop_activity(f"⛔ {reason}", category="loop")
 
         if not _stop_flag and LOOP_STATE.get("status") in ("running", "recovering") and all_completed:
             log_loop_activity("👑 Synthesizing all sub-agent deliverables into final Feature Document...", category="advisor")
@@ -1543,6 +1600,10 @@ Provide an authoritative Executive Summary, Architecture Implementation Breakdow
     except asyncio.CancelledError:
         log_loop_activity("Loop stopped by user.", category="loop")
         LOOP_STATE["status"] = "idle"
+        LOOP_STATE["active_subagent"] = None
+        LOOP_STATE["active_subagents"] = []
+        LOOP_STATE["current_task_id"] = None
+        LOOP_STATE["current_task_ids"] = []
         persist_active_loop_state()
         for sub in SWARM_LOOP_ROSTER:
             update_agent_status("sub_agents", sub["id"], "idle", "Idle")
@@ -1550,6 +1611,10 @@ Provide an authoritative Executive Summary, Architecture Implementation Breakdow
     except Exception as e:
         log_loop_activity(f"Loop error: {e}", category="error")
         LOOP_STATE["status"] = "failed"
+        LOOP_STATE["active_subagent"] = None
+        LOOP_STATE["active_subagents"] = []
+        LOOP_STATE["current_task_id"] = None
+        LOOP_STATE["current_task_ids"] = []
         persist_active_loop_state()
         for sub in SWARM_LOOP_ROSTER:
             update_agent_status("sub_agents", sub["id"], "idle", "Idle")
@@ -1562,6 +1627,28 @@ def _thread_worker():
     try:
         _loop_asyncio_loop.run_until_complete(_async_loop_runner())
     finally:
+        # Safety net: Guarantee that if status is still running/recovering when the worker thread exits,
+        # it is reconciled to an honest terminal state with idle agents.
+        with _state_lock:
+            if LOOP_STATE.get("status") in ("running", "recovering"):
+                tasks = LOOP_STATE.get("tasks", [])
+                if tasks and all(t.get("status") == "completed" for t in tasks):
+                    LOOP_STATE["status"] = "completed"
+                elif any(t.get("status") == "failed" for t in tasks):
+                    LOOP_STATE["status"] = "failed"
+                elif not LOOP_STATE.get("goal"):
+                    LOOP_STATE["status"] = "idle"
+                else:
+                    LOOP_STATE["status"] = "failed"
+                LOOP_STATE["active_subagent"] = None
+                LOOP_STATE["active_subagents"] = []
+                LOOP_STATE["current_task_id"] = None
+                LOOP_STATE["current_task_ids"] = []
+                persist_active_loop_state()
+            _loop_thread = None
+        for sub in SWARM_LOOP_ROSTER:
+            update_agent_status("sub_agents", sub["id"], "idle", "Idle")
+        update_agent_status("orchestrator", "gemini", "idle", "Awaiting user task...")
         _loop_asyncio_loop.close()
 
 def start_loop(goal: str, repo_path: str = "", session_id: str = None, advisor_session_id: str = "") -> Dict[str, Any]:
@@ -1714,11 +1801,15 @@ def auto_resume_on_startup() -> Optional[Dict[str, Any]]:
     return None
 
 def stop_loop() -> Dict[str, Any]:
-    global _stop_flag
+    global _stop_flag, _loop_thread
     _stop_flag = True
     _pause_event.set()
     LOOP_STATE["status"] = "idle"
     LOOP_STATE["active_subagent"] = None
+    LOOP_STATE["active_subagents"] = []
+    LOOP_STATE["current_task_id"] = None
+    LOOP_STATE["current_task_ids"] = []
+    _loop_thread = None
     persist_active_loop_state()
     log_loop_activity("Autonomous loop terminated.", category="loop")
     for sub in SWARM_LOOP_ROSTER:

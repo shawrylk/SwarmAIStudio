@@ -164,21 +164,29 @@ def detect_and_recover_interrupted_sessions() -> List[Dict[str, Any]]:
             data = json.loads(f.read_text(encoding="utf-8"))
             if data.get("status") in ("running", "recovering"):
                 sess_id = data.get("session_id") or data.get("id") or f.stem
-                data["status"] = "interrupted"
-                data["interrupted_at"] = int(time.time() * 1000)
-                data["updated_at"] = int(time.time() * 1000)
-                
-                timestamp = time.strftime('%H:%M:%S', time.localtime())
-                recovery_log = {
-                    "timestamp": timestamp,
-                    "message": "⚠️ Server was restarted or terminated during execution. Session marked as interrupted (checkpoint preserved for resume).",
-                    "category": "system",
-                    "is_active": False
-                }
-                data.setdefault("live_logs", []).append(recovery_log)
-                save_loop_session(data)
-                interrupted_sessions.append(data)
-                log_event("warn", "recovery", f"Detected interrupted loop session '{sess_id}'. Marked as interrupted/recoverable.")
+                tasks = data.get("tasks", [])
+                if tasks and all(t.get("status") == "completed" for t in tasks):
+                    data["status"] = "completed"
+                    save_loop_session(data)
+                elif any(t.get("status") == "failed" for t in tasks):
+                    data["status"] = "failed"
+                    save_loop_session(data)
+                else:
+                    data["status"] = "interrupted"
+                    data["interrupted_at"] = int(time.time() * 1000)
+                    data["updated_at"] = int(time.time() * 1000)
+                    
+                    timestamp = time.strftime('%H:%M:%S', time.localtime())
+                    recovery_log = {
+                        "timestamp": timestamp,
+                        "message": "⚠️ Server was restarted or terminated during execution. Session marked as interrupted (checkpoint preserved for resume).",
+                        "category": "system",
+                        "is_active": False
+                    }
+                    data.setdefault("live_logs", []).append(recovery_log)
+                    save_loop_session(data)
+                    interrupted_sessions.append(data)
+                    log_event("warn", "recovery", f"Detected interrupted loop session '{sess_id}'. Marked as interrupted/recoverable.")
         except Exception:
             pass
 

@@ -317,6 +317,65 @@ class TestLoopResilience(unittest.TestCase):
 
         delete_loop_session(sess["id"])
 
+    def test_loop_state_watchdog_reconciles_dead_thread_running_state(self):
+        """Watchdog in get_loop_state must never return 'running' if no worker thread is alive."""
+        import swarm.loop_engine as le
+        with le._state_lock:
+            le.LOOP_STATE["status"] = "running"
+            le.LOOP_STATE["goal"] = "Fix UI"
+            le.LOOP_STATE["tasks"] = [
+                {"id": "t1", "title": "Fix UI", "status": "failed"}
+            ]
+            le._loop_thread = None
+
+        state = get_loop_state()
+        self.assertEqual(state["status"], "failed")
+        self.assertIsNone(state["active_subagent"])
+
+    def test_select_loop_session_reconciles_historical_running_state(self):
+        """Selecting a historical session with 'running' status must reconcile if thread is not alive."""
+        sess = create_new_loop_session(title="Zombie Session", goal="Build Feature")
+        sess_id = sess["id"]
+        sess_data = load_loop_session(sess_id)
+        sess_data["status"] = "running"
+        sess_data["tasks"] = [
+            {"id": "task-1", "title": "Subtask 1", "status": "completed"},
+            {"id": "task-2", "title": "Subtask 2", "status": "completed"}
+        ]
+        save_loop_session(sess_data)
+
+        state = select_loop_session(sess_id)
+        self.assertEqual(state["status"], "completed")
+        delete_loop_session(sess_id)
+
+    def test_detect_and_recover_categorizes_completed_and_failed(self):
+        """detect_and_recover_interrupted_sessions should categorize completed and failed sessions accurately."""
+        sess_comp = create_new_loop_session(title="Completed Run", goal="Build Done")
+        data_comp = load_loop_session(sess_comp["id"])
+        data_comp["status"] = "running"
+        data_comp["tasks"] = [{"id": "t1", "status": "completed"}]
+        save_loop_session(data_comp)
+
+        sess_fail = create_new_loop_session(title="Failed Run", goal="Build Failed")
+        data_fail = load_loop_session(sess_fail["id"])
+        data_fail["status"] = "running"
+        data_fail["tasks"] = [{"id": "t1", "status": "failed"}]
+        save_loop_session(data_fail)
+
+        interrupted = detect_and_recover_interrupted_sessions()
+        interrupted_ids = [s.get("id") or s.get("session_id") for s in interrupted]
+        self.assertNotIn(sess_comp["id"], interrupted_ids)
+        self.assertNotIn(sess_fail["id"], interrupted_ids)
+
+        reloaded_comp = load_loop_session(sess_comp["id"])
+        self.assertEqual(reloaded_comp["status"], "completed")
+
+        reloaded_fail = load_loop_session(sess_fail["id"])
+        self.assertEqual(reloaded_fail["status"], "failed")
+
+        delete_loop_session(sess_comp["id"])
+        delete_loop_session(sess_fail["id"])
+
 
 class TestServerLoopResumeEndpoint(unittest.TestCase):
     @classmethod

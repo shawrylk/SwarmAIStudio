@@ -145,7 +145,8 @@ async def query_local_slot(prompt: str, system: str = "You are a specialized sub
         "max_tokens": max_tokens
     }
     try:
-        async with httpx.AsyncClient(timeout=180.0) as client:
+        timeout_config = httpx.Timeout(120.0, connect=10.0)
+        async with httpx.AsyncClient(timeout=timeout_config) as client:
             resp = await client.post(LFM_URL, json=payload)
             if resp.status_code == 200:
                 return resp.json()["choices"][0]["message"]["content"].strip()
@@ -166,10 +167,17 @@ async def query_gemini(prompt: str, model_id: str = None) -> str:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE
             )
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=40.0)
-            update_agent_status("orchestrator", "gemini", "idle", "Awaiting user task...")
-            if proc.returncode == 0 and stdout.strip():
-                return stdout.decode().strip()
+            try:
+                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=40.0)
+                update_agent_status("orchestrator", "gemini", "idle", "Awaiting user task...")
+                if proc.returncode == 0 and stdout.strip():
+                    return stdout.decode().strip()
+            except asyncio.TimeoutError:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+                update_agent_status("orchestrator", "gemini", "idle", "Gemini CLI timed out, falling back to local GPU slot")
         
         # Fallback to local GPU slot
         update_agent_status("orchestrator", "gemini", "idle", "Synthesized via Local GPU")
@@ -204,16 +212,21 @@ async def query_qwen_web(prompt: str) -> str:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE
         )
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=20.0)
-        if proc.returncode == 0 and stdout.strip():
-            update_agent_status("consensus_nodes", "qwen", "ready", f"chat.qwen.ai session ({active_qwen})")
-            return stdout.decode(errors="ignore").strip()
-        err = stderr.decode(errors="ignore").strip()[:160]
-        update_agent_status("consensus_nodes", "qwen", "offline", "Oracle returned no output")
-        return f"{QWEN_UNAVAILABLE_PREFIX} Qwen Web Oracle returned no answer (exit {proc.returncode}). Consensus NOT performed.{f' Detail: {err}' if err else ''}"
-    except asyncio.TimeoutError:
-        update_agent_status("consensus_nodes", "qwen", "offline", "Oracle timed out")
-        return f"{QWEN_UNAVAILABLE_PREFIX} Qwen Web Oracle timed out after 20s. Consensus NOT performed."
+        try:
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=20.0)
+            if proc.returncode == 0 and stdout.strip():
+                update_agent_status("consensus_nodes", "qwen", "ready", f"chat.qwen.ai session ({active_qwen})")
+                return stdout.decode(errors="ignore").strip()
+            err = stderr.decode(errors="ignore").strip()[:160]
+            update_agent_status("consensus_nodes", "qwen", "offline", "Oracle returned no output")
+            return f"{QWEN_UNAVAILABLE_PREFIX} Qwen Web Oracle returned no answer (exit {proc.returncode}). Consensus NOT performed.{f' Detail: {err}' if err else ''}"
+        except asyncio.TimeoutError:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+            update_agent_status("consensus_nodes", "qwen", "offline", "Oracle timed out")
+            return f"{QWEN_UNAVAILABLE_PREFIX} Qwen Web Oracle timed out after 20s. Consensus NOT performed."
     except Exception as e:
         update_agent_status("consensus_nodes", "qwen", "offline", "Oracle execution error")
         return f"{QWEN_UNAVAILABLE_PREFIX} Qwen Web Oracle execution failed: {e}. Consensus NOT performed."

@@ -141,20 +141,25 @@ async def execute_claude_cli(prompt: str, cwd: str = "", timeout_secs: int = 45)
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE
         )
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout_secs)
-        out_str = stdout.decode("utf-8", errors="ignore").strip()
-        err_str = stderr.decode("utf-8", errors="ignore").strip()
+        try:
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout_secs)
+            out_str = stdout.decode("utf-8", errors="ignore").strip()
+            err_str = stderr.decode("utf-8", errors="ignore").strip()
 
-        if proc.returncode == 0 and out_str:
-            log_event("info", "bridge", f"Claude CLI responded successfully ({len(out_str)} chars)")
-            return out_str
-        elif err_str:
-            log_event("warn", "bridge", f"Claude CLI returned stderr: {err_str[:120]}")
-            return f"Claude CLI notice: {out_str or err_str}"
-        return out_str or "No output from Claude CLI."
-    except asyncio.TimeoutError:
-        log_event("error", "bridge", f"Claude CLI timed out after {timeout_secs}s")
-        return f"Claude CLI query timed out after {timeout_secs}s."
+            if proc.returncode == 0 and out_str:
+                log_event("info", "bridge", f"Claude CLI responded successfully ({len(out_str)} chars)")
+                return out_str
+            elif err_str:
+                log_event("warn", "bridge", f"Claude CLI returned stderr: {err_str[:120]}")
+                return f"Claude CLI notice: {out_str or err_str}"
+            return out_str or "No output from Claude CLI."
+        except asyncio.TimeoutError:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+            log_event("error", "bridge", f"Claude CLI timed out after {timeout_secs}s")
+            return f"Claude CLI query timed out after {timeout_secs}s."
     except Exception as e:
         log_event("error", "bridge", f"Claude CLI execution error: {e}")
         return f"Claude CLI execution failed: {e}"
