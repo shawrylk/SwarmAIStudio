@@ -21,6 +21,13 @@ PARALLEL_AUDIT_PHASE = os.environ.get("SWARM_PARALLEL_AUDIT", "1").lower() in ("
 PARALLEL_TASK_EXECUTION = os.environ.get("SWARM_PARALLEL_TASKS", "1").lower() in ("1", "true", "yes")
 MULTI_WORKTREE_DAG = os.environ.get("SWARM_MULTI_WORKTREE_DAG", "1").lower() in ("1", "true", "yes")
 
+# Dev-role execution engine. "pi" routes code drafting through the Pi coding
+# agent's tool loop so the model can read a file before rewriting it; "raw" uses
+# the legacy single-completion call. "auto" is equivalent to "pi" when the CLI
+# is installed and falls back automatically when it is not.
+DEV_AGENT_ENGINE = os.environ.get("SWARM_DEV_ENGINE", "auto").strip().lower()
+PI_AGENT_TIMEOUT = float(os.environ.get("SWARM_PI_TIMEOUT", "900"))
+
 # Persistent Directory Structure
 SWARM_DIR = Path.home() / ".swarm"
 SESSIONS_DIR = SWARM_DIR / "sessions"

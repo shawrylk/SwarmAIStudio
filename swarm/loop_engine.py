@@ -18,7 +18,9 @@ from swarm.config import (
     MAX_CONCURRENT_AGENTS,
     PARALLEL_AUDIT_PHASE,
     PARALLEL_TASK_EXECUTION,
-    MULTI_WORKTREE_DAG
+    MULTI_WORKTREE_DAG,
+    DEV_AGENT_ENGINE,
+    PI_AGENT_TIMEOUT,
 )
 from swarm.logger import log_event
 from swarm.git_engine import (
@@ -52,6 +54,7 @@ from swarm.artifacts import save_artifact_to_disk
 from swarm.rules_engine import format_enforced_rules_prompt
 from swarm.skills_scanner import resolve_and_inject_skill
 from swarm.context7_engine import fetch_latest_doc_context
+from swarm.pi_agent import run_pi_agent, pi_available
 from swarm.contracts_engine import format_contracts_prompt_block, scan_and_parse_contracts, validate_cel_invariants
 from swarm.orchestrator import (
     set_dynamic_subagents_roster,
@@ -543,6 +546,69 @@ Respond ONLY with a valid JSON array of objects with this schema:
 
     return formatted_tasks
 
+def dev_engine_is_pi(repo_path: str) -> bool:
+    """Whether this dev task should run through Pi's agentic tool loop.
+
+    Requires an explicit opt-in ("pi"/"auto"), the pi CLI present, and a real
+    repository — Pi's tools are path-relative and pointless without one.
+    """
+    if DEV_AGENT_ENGINE not in ("pi", "auto"):
+        return False
+    if not repo_path or not Path(repo_path).exists():
+        return False
+    return pi_available()
+
+
+def _pi_written_files(pi_res: Dict[str, Any], repo_path: str) -> List[Dict[str, Any]]:
+    """Normalise Pi's written paths into the shape the audit stages expect.
+
+    The rest of the pipeline consumes records with path/abs_path/bytes/lines —
+    notably check_runner_covers_deliverable, which infers the deliverable's
+    language from these paths and silently passes everything if handed an empty
+    list. Pi writes files itself, so the sizes are read back from disk.
+    """
+    records: List[Dict[str, Any]] = []
+    root = Path(repo_path) if repo_path else None
+    for rel in pi_res.get("files_written", []) or []:
+        abs_p = (root / rel) if root else Path(rel)
+        try:
+            content = abs_p.read_text(encoding="utf-8", errors="ignore")
+            size, lines = len(content), len(content.splitlines())
+        except OSError:
+            size, lines = 0, 0
+        records.append({"path": rel, "abs_path": str(abs_p), "bytes": size, "lines": lines})
+    return records
+
+
+# Output contract for the Pi path. The opposite of the single-completion
+# contract: here the agent HAS tools, and using them is mandatory. Telling a
+# tool-capable agent to emit whole files from memory is what produced 23-line
+# replacements for 188-line classes.
+DEV_PI_CONTRACT = """
+HOW TO WORK — YOU HAVE REAL TOOLS:
+- You can read, edit, write and run commands. Use them.
+- BEFORE changing any existing file you MUST read it first. Never rewrite a file
+  you have not read — a truncated rewrite destroys working code.
+- Prefer targeted edits over whole-file rewrites. Only use write() for files you
+  are creating from nothing.
+- Match the language and conventions already in the repository.
+- Add or update the unit tests covering your change.
+- Work until the task is complete, then briefly summarise what you changed.
+"""
+
+DEV_PI_SYSTEM = (
+    "You are the Surgical Code Draftsman. You have read/edit/write/bash tools in a real "
+    "repository. Always read an existing file before editing it, and make the smallest "
+    "correct change. Never replace a file you have not read."
+)
+
+DEV_PI_REPAIR_CONTRACT = """
+YOUR PREVIOUS ATTEMPT CHANGED NO FILES.
+Investigate the repository with your tools and apply the change now. Read the
+relevant files first, then edit them. Do not stop until a file has changed.
+"""
+
+
 # How many extra write-only prompts to issue when the dev stage returns no files.
 DEV_WRITE_REPAIR_TURNS = 2
 
@@ -714,7 +780,7 @@ async def execute_zero_trust_task(
         else:
             adv_guidance = task.get("advisor_consultations", [{}])[-1].get("guidance", "") if task.get("advisor_consultations") else ""
 
-        dev_prompt = f"""{rules_block}
+        dev_context = f"""{rules_block}
 
 {dev_skill['injection_prompt']}
 
@@ -732,6 +798,9 @@ ACCEPTANCE CRITERIA: {task['acceptance_criteria']}
 
 {f"=== PREVIOUS ATTEMPT DIAGNOSTIC REJECTION & TEST FAILURE TRACE (MUST FIX ALL): ===\n{diagnostic_feedback}\n========================================================" if diagnostic_feedback else ""}
 
+"""
+
+        dev_prompt = dev_context + f"""
 CRITICAL OUTPUT CONTRACT — READ CAREFULLY:
 You get exactly ONE response and CANNOT run tools interactively. Therefore:
 - DO NOT call read_file, read, list_dir, terminal, or any inspection tool — you will not get a result back.
@@ -746,16 +815,50 @@ Every file you name MUST include its full, production-grade content (Clean Archi
 """
         # Code generation needs a large budget — files get truncated mid-write at the
         # default 2048 tokens, which is the #1 cause of "no code produced".
-        dev_output = await query_local_slot(
-            dev_prompt,
-            system="You are the Surgical Code Draftsman. You have ONE turn and no interactive tools. Emit complete write() calls for every file — never read_file or terminal.",
-            max_tokens=8192,
-        )
+        use_pi = dev_engine_is_pi(repo_path)
+        task["dev_engine"] = "pi" if use_pi else "raw"
+
+        if use_pi:
+            # Agentic path: Pi drives a real read/edit/write loop, so the agent can
+            # inspect a file before changing it. This is what stops a refactor task
+            # from becoming a blind full-file overwrite.
+            pi_res = await run_pi_agent(
+                dev_context + DEV_PI_CONTRACT,
+                repo_path,
+                system=DEV_PI_SYSTEM,
+                timeout=PI_AGENT_TIMEOUT,
+            )
+            dev_output = pi_res.get("text") or ""
+            written_files = _pi_written_files(pi_res, repo_path)
+            if not pi_res.get("success"):
+                # Fall back rather than fail the attempt outright: a Pi launch or
+                # timeout problem is not evidence about the deliverable.
+                log_loop_activity(
+                    f"⚠️ Pi dev agent unavailable ({pi_res.get('error')}). "
+                    f"Falling back to single-completion drafting.",
+                    category="dev",
+                )
+                task["dev_engine"] = "raw (pi fallback)"
+                dev_output = await query_local_slot(
+                    dev_prompt, system=DEV_WRITE_ONLY_SYSTEM, max_tokens=8192
+                )
+                written_files = extract_code_blocks_and_write(repo_path, dev_output)
+            else:
+                tool_names = [t.get("name") for t in pi_res.get("tool_calls", [])]
+                log_loop_activity(
+                    f"🛠️ Pi dev agent ran {len(tool_names)} tool call(s): {', '.join(tool_names[:8])}",
+                    category="dev",
+                )
+        else:
+            dev_output = await query_local_slot(
+                dev_prompt,
+                system=DEV_WRITE_ONLY_SYSTEM,
+                max_tokens=8192,
+            )
+            written_files = extract_code_blocks_and_write(repo_path, dev_output)
+
         task["output"] = dev_output
         
-        # Real Code Application: Extract code file blocks and write directly to repository filesystem
-        written_files = extract_code_blocks_and_write(repo_path, dev_output)
-
         # No-write repair turn. The small model routinely answers with an
         # inspection/shell tool-call (read_file, bash, exec) that this harness
         # cannot serve, so nothing lands on disk. Retrying the DEV stage alone is
@@ -771,12 +874,22 @@ Every file you name MUST include its full, production-grade content (Clean Archi
                 f"Issuing write-only repair prompt {repair}/{DEV_WRITE_REPAIR_TURNS}...",
                 category="dev",
             )
-            dev_output = await query_local_slot(
-                _build_write_repair_prompt(dev_prompt, dev_output, requested),
-                system=DEV_WRITE_ONLY_SYSTEM,
-                max_tokens=8192,
-            )
-            written_files = extract_code_blocks_and_write(repo_path, dev_output)
+            if task.get("dev_engine") == "pi":
+                pi_res = await run_pi_agent(
+                    dev_context + DEV_PI_REPAIR_CONTRACT,
+                    repo_path,
+                    system=DEV_PI_SYSTEM,
+                    timeout=PI_AGENT_TIMEOUT,
+                )
+                dev_output = pi_res.get("text") or dev_output
+                written_files = _pi_written_files(pi_res, repo_path)
+            else:
+                dev_output = await query_local_slot(
+                    _build_write_repair_prompt(dev_prompt, dev_output, requested),
+                    system=DEV_WRITE_ONLY_SYSTEM,
+                    max_tokens=8192,
+                )
+                written_files = extract_code_blocks_and_write(repo_path, dev_output)
 
         task["output"] = dev_output
         task["files_written"] = [f["path"] for f in written_files]

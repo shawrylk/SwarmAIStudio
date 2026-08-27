@@ -37,6 +37,13 @@ from swarm.sessions import create_new_loop_session, load_loop_session, delete_lo
 class TestLoopHappyPathAndStageFailures(unittest.TestCase):
     def setUp(self):
         stop_loop()
+        # The dev stage defaults to the Pi agent, which spawns a real subprocess
+        # against a live model. These tests exercise orchestration, not the agent,
+        # so pin them to the single-completion path. Pi wiring is covered by
+        # tests/test_pi_agent_bridge.py with run_pi_agent mocked.
+        _pi = patch("swarm.loop_engine.pi_available", return_value=False)
+        _pi.start()
+        self.addCleanup(_pi.stop)
 
     def tearDown(self):
         stop_loop()

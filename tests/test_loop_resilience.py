@@ -40,6 +40,15 @@ from swarm.loop_engine import (
 from swarm.server import SwarmHandler
 
 class TestLoopResilience(unittest.TestCase):
+    def setUp(self):
+        # The dev stage defaults to the Pi agent, which spawns a real subprocess
+        # against a live model. These tests exercise orchestration, not the agent,
+        # so pin them to the single-completion path. Pi wiring is covered by
+        # tests/test_pi_agent_bridge.py with run_pi_agent mocked.
+        _pi = patch("swarm.loop_engine.pi_available", return_value=False)
+        _pi.start()
+        self.addCleanup(_pi.stop)
+
     def tearDown(self):
         stop_loop()
 
@@ -459,6 +468,13 @@ class TestServerLoopResumeEndpoint(unittest.TestCase):
     def tearDownClass(cls):
         cls.httpd.shutdown()
         cls.httpd.server_close()
+
+    def setUp(self):
+        # Pin the dev stage to the single-completion path; the Pi agent would
+        # spawn a real subprocess against a live model.
+        _pi = patch("swarm.loop_engine.pi_available", return_value=False)
+        _pi.start()
+        self.addCleanup(_pi.stop)
 
     def _req(self, path, method="GET", data=None):
         url = f"http://127.0.0.1:{self.port}{path}"
