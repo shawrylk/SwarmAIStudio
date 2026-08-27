@@ -1202,15 +1202,34 @@ def gh_project_set_status(repo_path: str, owner: str, number: int, item_id: str,
         return {"success": False, "error": str(e)}
 
 
-def gh_pr_create(repo_path: str, title: str, body: str, base: str = "main", head: str = "") -> Dict[str, Any]:
+def gh_pr_create(
+    repo_path: str,
+    title: str,
+    body: str,
+    base: str = "main",
+    head: str = "",
+    base_branch: Optional[str] = None,
+    head_branch: Optional[str] = None,
+    draft: bool = False
+) -> Dict[str, Any]:
     """Creates a pull request with graceful fallback."""
+    effective_base = base_branch or base or "main"
+    effective_head = head_branch or head or ""
+
     if not is_gh_available() or not repo_path:
         local_id = int(time.time() % 100000)
         return {"success": True, "pr_number": local_id, "url": f"local://pull/{local_id}", "fallback": True}
 
-    cmd = ["gh", "pr", "create", "--title", title, "--body", body, "--base", base]
-    if head:
-        cmd.extend(["--head", head])
+    if effective_head:
+        push_res = run_git(repo_path, ["push", "-u", "origin", effective_head])
+        if not push_res["success"]:
+            log_event("warn", "git", f"Pushing branch '{effective_head}' to origin: {push_res.get('stderr') or push_res.get('stdout')}")
+
+    cmd = ["gh", "pr", "create", "--title", title, "--body", body, "--base", effective_base]
+    if effective_head:
+        cmd.extend(["--head", effective_head])
+    if draft:
+        cmd.append("--draft")
 
     try:
         res = subprocess.run(cmd, cwd=repo_path, capture_output=True, text=True, timeout=20)
@@ -1219,7 +1238,7 @@ def gh_pr_create(repo_path: str, title: str, body: str, base: str = "main", head
             match = re.search(r'/pull/(\d+)', url)
             pr_num = int(match.group(1)) if match else int(time.time() % 100000)
             log_event("info", "git", f"Created GitHub PR #{pr_num}: '{title}' ({url})")
-            return {"success": True, "pr_number": pr_num, "url": url, "title": title, "fallback": False}
+            return {"success": True, "pr_number": pr_num, "url": url, "title": title, "head": effective_head, "base": effective_base, "fallback": False}
         else:
             local_id = int(time.time() % 100000)
             return {"success": True, "pr_number": local_id, "url": f"local://pull/{local_id}", "fallback": True, "error": res.stderr.strip()}
@@ -1862,6 +1881,19 @@ def _parse_tool_call_writes(llm_output: str) -> List[Dict[str, str]]:
                 content_val = pos[1]
             if isinstance(path_val, str) and isinstance(content_val, str):
                 files.append({"path": path_val, "content": content_val})
+
+    # Regex fallback if AST parsing was foiled by raw newlines or syntax quirks
+    if not files:
+        rgx = re.compile(
+            r'(?:write|write_file|create_file|create|edit|save_file)\s*\(\s*(?:path=)?[\'\"]([^\'\"]+)[\'\"]\s*,\s*(?:content=)?([\'\"])(.*?)\2\s*\)',
+            re.DOTALL
+        )
+        for m in rgx.finditer(llm_output):
+            f_path = m.group(1).strip()
+            f_content = m.group(3)
+            if f_path:
+                files.append({"path": f_path, "content": f_content})
+
     return files
 
 
@@ -1884,11 +1916,8 @@ def extract_code_blocks_and_write(repo_path: str, llm_output: str) -> List[Dict[
         if clean_path.startswith("./"):
             clean_path = clean_path[2:]
 
-        # Models often emit an ABSOLUTE path that already points inside the repo
-        # (e.g. /home/.../repo/src/x.py). Rebase it to a repo-relative path rather
-        # than blindly stripping the leading slash (which produced a bogus nested
-        # dir and meant nothing landed). Only strip the slash for a genuinely
-        # foreign absolute path, where the containment check below then rejects it.
+        # Models often emit an ABSOLUTE path or prefixed path (e.g. /home/.../DeltaProject/src/x.py).
+        # Rebase it to a clean repo-relative path.
         if clean_path.startswith("/") and rp:
             try:
                 rebased = Path(clean_path).resolve().relative_to(rp.resolve())
@@ -1897,6 +1926,20 @@ def extract_code_blocks_and_write(repo_path: str, llm_output: str) -> List[Dict[
                 clean_path = clean_path.lstrip("/")
         elif clean_path.startswith("/"):
             clean_path = clean_path.lstrip("/")
+
+        # Strip accidental home/ or foreign repo prefixes if present
+        if rp:
+            parts = Path(clean_path).parts
+            if rp.name in parts:
+                idx = parts.index(rp.name)
+                if idx + 1 < len(parts):
+                    clean_path = str(Path(*parts[idx + 1:]))
+            elif len(parts) > 1 and parts[0] in ("home", "Users", "tmp", "var", "etc", "opt"):
+                for root_marker in ("src", "tests", "test", "lib", "app", "Scripts", "pkg"):
+                    if root_marker in parts:
+                        idx = parts.index(root_marker)
+                        clean_path = str(Path(*parts[idx:]))
+                        break
 
         # Check for traversal attack
         if ".." in clean_path.split("/") or ".." in clean_path.split("\\"):
