@@ -110,10 +110,10 @@ def discover_project_rules(repo_path: str) -> Dict[str, Any]:
 
     return {"has_rules": False, "source": None, "content": ""}
 
-def format_enforced_rules_prompt(repo_path: str = "") -> str:
+def format_enforced_rules_prompt(repo_path: str = "", learned_rules: Optional[List[str]] = None) -> str:
     """
-    Constructs an authoritative rules block containing both Global Clean Architecture Rules
-    and repository-specific project rules to inject into Swarm sub-agents and Lead Advisor.
+    Constructs an authoritative rules block containing Global Clean Architecture Rules,
+    repository-specific project rules, and dynamically evolved lessons learned.
     """
     global_text = get_global_rules().strip()
     proj_info = discover_project_rules(repo_path)
@@ -126,5 +126,12 @@ def format_enforced_rules_prompt(repo_path: str = "") -> str:
     if proj_info["has_rules"]:
         sections.append(f"\n=== [PROJECT-SPECIFIC RULES ({proj_info['source']})] ===")
         sections.append(proj_info["content"])
+
+    if learned_rules:
+        clean_rules = [r.strip() for r in learned_rules if r and r.strip()]
+        if clean_rules:
+            sections.append("\n=== [DYNAMIC LESSONS LEARNED & EVOLVED INVARIANTS (DO NOT REPEAT MISTAKES)] ===")
+            for idx, rule in enumerate(clean_rules, 1):
+                sections.append(f"{idx}. {rule}")
 
     return "\n\n".join(sections)

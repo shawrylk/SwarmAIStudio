@@ -376,6 +376,76 @@ class TestLoopResilience(unittest.TestCase):
         delete_loop_session(sess_comp["id"])
         delete_loop_session(sess_fail["id"])
 
+    def test_advisor_escalation_evolves_rule_and_remediates_retry(self):
+        """When an attempt fails, it escalates to Lead Advisor, learns an evolved rule, and fixes the retry."""
+        import swarm.loop_engine as le
+        from swarm.loop_engine import execute_zero_trust_task
+        import subprocess
+
+        with tempfile.TemporaryDirectory() as td:
+            repo_p = Path(td)
+            subprocess.run(["git", "init", "-b", "main", str(repo_p)], capture_output=True, check=True)
+            (repo_p / "README.md").write_text("# Repo\n")
+            subprocess.run(["git", "-C", str(repo_p), "add", "-A"], check=True)
+            subprocess.run(["git", "-C", str(repo_p), "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-m", "init"], check=True)
+
+            task = {
+                "id": "task-learn-1", "order": 1, "title": "Missing Import Feature",
+                "role": "dev", "description": "Construct domain model", "acceptance_criteria": "pass",
+                "status": "pending", "attempts": 0, "advisor_consultations": [],
+            }
+
+            call_counts = {"dev": 0, "advisor": 0}
+
+            async def mock_query_local_slot(prompt, system="", **kwargs):
+                pu = prompt.upper()
+                if "SURGICAL CODE DRAFTSMAN" in pu:
+                    call_counts["dev"] += 1
+                    if call_counts["dev"] == 1:
+                        # First attempt missing imports
+                        return "<|tool_call_start|>[write(path='src/model.py', content='class Broken: pass\\n')]<|tool_call_end|>"
+                    else:
+                        # Second attempt with advisor guidance & learned rule applied
+                        return "<|tool_call_start|>[write(path='src/model.py', content='from typing import List\\nclass Fixed: pass\\n')]<|tool_call_end|>"
+                if "ZERO-TRUST QA MANDATE" in pu:
+                    return "VERDICT: PASSED" if call_counts["dev"] > 1 else "VERDICT: FAILED (Reason: Missing typing imports)"
+                if "ZERO-TRUST SECURITY MANDATE" in pu:
+                    return "VERDICT: PASSED"
+                if "AUTONOMOUS SWARM AUTO-JUDGE" in pu:
+                    return "DECISION: APPROVED" if call_counts["dev"] > 1 else "DECISION: REJECTED (Diagnostics: Fix imports)"
+                return "OK"
+
+            async def mock_query_gemini(prompt, **kwargs):
+                call_counts["advisor"] += 1
+                return """### 🛠️ Step-by-Step Remediation Plan
+1. Add `from typing import List, Dict` at the top of src/model.py.
+
+### 📜 Evolved Dynamic Rule
+RULE: In Python domain files, always include standard typing imports (List, Dict, Optional).
+"""
+
+            async def run():
+                with patch("swarm.loop_engine.query_local_slot", side_effect=mock_query_local_slot), \
+                     patch("swarm.loop_engine.query_gemini", side_effect=mock_query_gemini), \
+                     patch("swarm.loop_engine.query_qwen_web", new_callable=AsyncMock, return_value="ok"), \
+                     patch("swarm.loop_engine.run_test_suite", return_value={"success": True, "skipped": False, "runner": "pytest", "exit_code": 0}), \
+                     patch("swarm.loop_engine.commit_changes") as mock_commit:
+                    
+                    le.LOOP_STATE["learned_rules"] = []
+                    out = await execute_zero_trust_task(
+                        task, repo_block="", repo_path=str(repo_p), research_brief="", github_issue_num=None
+                    )
+                    return out, mock_commit
+
+            result, mock_commit = asyncio.run(run())
+            self.assertEqual(result["status"], "completed")
+            self.assertEqual(result["attempts"], 2)
+            mock_commit.assert_called_once()
+            
+            # Verify that dynamic rule was evolved and recorded in session state
+            self.assertTrue(len(le.LOOP_STATE["learned_rules"]) > 0)
+            self.assertTrue(any("always include standard typing imports" in r for r in le.LOOP_STATE["learned_rules"]))
+
 
 class TestServerLoopResumeEndpoint(unittest.TestCase):
     @classmethod

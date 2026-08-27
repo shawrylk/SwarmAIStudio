@@ -41,5 +41,17 @@ class TestRulesEngine(unittest.TestCase):
             self.assertIn("PROJECT-SPECIFIC RULES (GEMINI.md)", prompt)
             self.assertIn("Sub-agents must run sequential", prompt)
 
+    def test_format_enforced_rules_prompt_includes_dynamic_learned_rules(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmppath = Path(tmpdir)
+            learned = [
+                "RULE: In C# .NET solutions, always include using System.Collections.Generic;",
+                "RULE: Never remove existing namespace imports in domain entities."
+            ]
+            prompt = format_enforced_rules_prompt(str(tmppath), learned_rules=learned)
+            self.assertIn("DYNAMIC LESSONS LEARNED & EVOLVED INVARIANTS", prompt)
+            self.assertIn("In C# .NET solutions, always include using System.Collections.Generic;", prompt)
+            self.assertIn("Never remove existing namespace imports", prompt)
+
 if __name__ == "__main__":
     unittest.main()

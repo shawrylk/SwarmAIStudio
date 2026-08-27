@@ -174,6 +174,7 @@ def _ensure_loop_state_keys(state: Dict[str, Any]) -> Dict[str, Any]:
     state.setdefault("project_board", {})
     state.setdefault("branch_deleted", False)
     state.setdefault("test_summary", "")
+    state.setdefault("learned_rules", [])
     return state
 
 def persist_active_loop_state():
@@ -684,6 +685,9 @@ async def execute_zero_trust_task(
         persist_active_loop_state()
         log_loop_activity(f"🔄 Task '{task_title}' — Stage 1: Dev Drafting (Attempt {attempt}/{max_retries})", category="loop", is_active=True)
         
+        learned_rules = LOOP_STATE.get("learned_rules", [])
+        rules_block = format_enforced_rules_prompt(repo_path, learned_rules=learned_rules)
+        
         # ─────────────────────────────────────────────────────────────
         # STAGE 1: DEV DRAFTSMAN (Implementation & Real Code Application)
         # ─────────────────────────────────────────────────────────────
@@ -1126,9 +1130,59 @@ DECISION: REJECTED (Diagnostics: <concrete diagnostic issues to fix>)
                 test_result, qa_output, sec_output, judge_output,
                 infra_broken=infra_broken, wrote_files=bool(written_files),
             )
+            
+            # Active Lead Advisor Escalation: Ask Advisor / Qwen Oracle for precise remediation plan and extract evolved rules
+            consult_prompt = f"""We are executing Task: '{task_title}' (Role: {role}).
+Attempt {attempt} of {max_retries} was REJECTED by the Zero-Trust Gate.
+
+Failure Diagnostics & Test Failure Trace:
+{diagnostic_feedback}
+
+Recent Files Written: {[f.get('path', '') for f in written_files]}
+
+Analyze this failure and respond in this exact structured format:
+### 🛠️ Step-by-Step Remediation Plan
+(Provide exact, actionable code guidance for the Dev Draftsman to fix this error and pass the test suite)
+
+### 📜 Evolved Dynamic Rule
+(One clear, universal rule summarizing this mistake so the swarm never repeats it, starting with 'RULE:')
+"""
+            log_loop_activity(f"🧠 Escalating failure on '{task_title}' to Lead Advisor & Oracle for root-cause remediation plan...", category="ping", is_active=True)
+            remediation_plan = await ping_lead_advisor(
+                subagent_name=task.get("assigned_agent", "Surgical Code Draftsman"),
+                role=role,
+                question=f"How do we fix this task failure and pass the test suite?",
+                task_context=consult_prompt
+            )
+            
+            # Extract and store evolved dynamic rule into persistent session state
+            evolved_rule = ""
+            if "### 📜 Evolved Dynamic Rule" in remediation_plan:
+                evolved_rule = remediation_plan.split("### 📜 Evolved Dynamic Rule")[1].split("###")[0].strip()
+            elif "RULE:" in remediation_plan:
+                for line in remediation_plan.split("\n"):
+                    if "RULE:" in line:
+                        evolved_rule = line.strip()
+                        break
+
+            if evolved_rule:
+                with _state_lock:
+                    if "learned_rules" not in LOOP_STATE:
+                        LOOP_STATE["learned_rules"] = []
+                    if evolved_rule not in LOOP_STATE["learned_rules"]:
+                        LOOP_STATE["learned_rules"].append(evolved_rule)
+                        log_loop_activity(f"💡 Swarm Evolved Dynamic Rule: {evolved_rule[:120]}", category="rules")
+                        persist_active_loop_state()
+
+            task.setdefault("advisor_consultations", []).append({
+                "question": f"Attempt {attempt} Failure Escalation",
+                "guidance": remediation_plan,
+                "attempt": attempt
+            })
+            diagnostic_feedback += f"\n\n=== 👑 LEAD ADVISOR ROOT-CAUSE REMEDIATION PLAN (MUST FOLLOW STRICTLY) ===\n{remediation_plan}\n"
             task["diagnostic_feedback"] = diagnostic_feedback
             persist_active_loop_state()
-            log_loop_activity(f"❌ Auto-Judge REJECTED '{task_title}' (Attempt {attempt}/{max_retries}): {'; '.join(gate_reasons)}. Retrying...", category="judge")
+            log_loop_activity(f"❌ Auto-Judge REJECTED '{task_title}' (Attempt {attempt}/{max_retries}): {'; '.join(gate_reasons)}. Retrying with Advisor Remediation Plan...", category="judge")
             if github_issue_num:
                 gh_issue_comment(
                     repo_path,
