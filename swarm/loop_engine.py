@@ -508,6 +508,13 @@ Respond ONLY with a valid JSON array of objects with this schema:
         }
         agent_name, slot = agent_map.get(role, ("⚙️ Surgical Code Draftsman", "Liquid LFM 2.5 (Slot 2)"))
 
+        # Sequential dependency chaining: if no dependencies were specified,
+        # each task depends on the preceding task (task-1 -> task-2 -> task-3)
+        # to prevent concurrent file overwrite collisions on the working tree.
+        deps = t.get("dependencies", [])
+        if not deps and i > 0:
+            deps = [f"task-{i}"]
+
         formatted_tasks.append({
             "id": f"task-{i+1}",
             "order": i + 1,
@@ -515,7 +522,7 @@ Respond ONLY with a valid JSON array of objects with this schema:
             "role": role,
             "description": t.get("description", ""),
             "acceptance_criteria": t.get("acceptance_criteria", ""),
-            "dependencies": t.get("dependencies", []),
+            "dependencies": deps,
             "status": "pending",
             "assigned_agent": agent_name,
             "assigned_slot": slot,
@@ -710,7 +717,7 @@ async def execute_zero_trust_task(
 {repo_block}
 
 TASK: {task_title}
-ROLE: SURGICAL CODE DRAFTSMAN (DEV)
+ROLE: SURGICAL CODE DRAFTSMAN ({role.upper()})
 DESCRIPTION: {task['description']}
 ACCEPTANCE CRITERIA: {task['acceptance_criteria']}
 {f"LEAD ADVISOR GUIDANCE: {adv_guidance}" if adv_guidance else ""}
@@ -722,10 +729,12 @@ You get exactly ONE response and CANNOT run tools interactively. Therefore:
 - DO NOT call read_file, read, list_dir, terminal, or any inspection tool — you will not get a result back.
 - You MUST emit the COMPLETE contents of every file to create or modify, in this ONE response.
 - Emit one write() tool-call per file, e.g.:
-  <|tool_call_start|>[write(path='src/greet.py', content='<COMPLETE FILE CONTENT>'), write(path='tests/test_greet.py', content='<COMPLETE FILE CONTENT>')]<|tool_call_end|>
-  (relative repo paths preferred; escape newlines as \\n inside the content string).
-- Equivalent accepted formats if you don't emit tool-calls: a fenced block ```lang path/to/file.ext``` with full content, or a JSON array [{{"path": "...", "content": "..."}}].
-Every file you name MUST include its full, production-grade content (Clean Architecture: functions ≤30 lines, typed signatures, error handling). Always include the unit test file. Emit writes NOW — do not describe, do not ask, do not read.
+  <|tool_call_start|>[write(path='relative/path/to/target.ext', content='<COMPLETE FILE BODY>')]<|tool_call_end|>
+  (relative repo paths only; escape newlines as \\n inside content string).
+- For C# (.cs): ALWAYS include required namespaces at top (e.g. using System; using System.Collections.Generic; using System.Linq;).
+- For Python (.py): ALWAYS include necessary imports (from typing import List, Dict, Optional, Any, Tuple, Set).
+- Equivalent accepted formats: a fenced block ```lang relative/path/to/target.ext``` with full content, or a JSON array [{{"path": "...", "content": "..."}}].
+Every file you name MUST include its full, production-grade content (Clean Architecture: functions ≤30 lines, typed signatures, error handling). Include unit tests where applicable. Emit writes NOW — do not describe, do not ask, do not read.
 """
         # Code generation needs a large budget — files get truncated mid-write at the
         # default 2048 tokens, which is the #1 cause of "no code produced".
