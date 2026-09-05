@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="color-scheme" content="dark">
   <title>Swarm AI Studio · Autonomous Loop Agent & GitHub Desktop</title>
-  <link rel="stylesheet" href="/css/style.css">
+  <link rel="stylesheet" href="/css/style.css?v=dark-mint-5">
 </head>
 <body>
 
@@ -39,8 +39,7 @@
     </div>
 
     <nav class="tab-bar" id="mainTabBar">
-      <button class="tab-btn active" id="tabChatBtn" onclick="switchTab('chat')">💬 AI Advisor</button>
-      <button class="tab-btn" id="tabLoopBtn" onclick="switchTab('loop')">🔄 Auto-Loop</button>
+      <button class="tab-btn active" id="tabAgentBtn" onclick="switchTab('agent')">💬 Swarm Agent</button>
       <button class="tab-btn" id="tabGitBtn" onclick="switchTab('git')">🌿 Git Desktop</button>
       <button class="tab-btn" id="tabContractsBtn" onclick="switchTab('contracts')">📜 Contracts</button>
       <button class="tab-btn" id="tabTopoBtn" onclick="switchTab('topo')">🕸️ Topology</button>
@@ -54,10 +53,10 @@
       </div>
       <div class="pill"><span id="gpuVal">GPU: 0%</span></div>
       <div class="pill"><span id="ramVal">RAM: 0/30GB</span></div>
-      <div class="pill" id="activeAgentsPill" title="Active sub-agents across GPU batching slots">
-        <span id="activeAgentsVal">0 / 8 Active</span>
+      <div class="pill" id="activeAgentsPill" title="Status">
+        <span id="activeAgentsVal">Status: Ready</span>
       </div>
-      <div class="pill"><span id="modelVal">LFM 2.5: 8 slots ready</span></div>
+      <div class="pill"><span id="modelVal">LFM 2.5 VL: 2 slots ready</span></div>
     </div>
   </header>
 
@@ -65,8 +64,8 @@
 
     <!-- LEFT SIDEBAR: MULTI-CHAT SESSIONS -->
     <aside class="chat-sidebar" id="chatSidebar">
-      <div class="sidebar-header">
-        <button class="new-chat-btn" onclick="startNewChat()">➕ New chat session</button>
+      <div class="sidebar-header" style="display:flex; flex-direction:column; gap:6px;">
+        <button class="new-chat-btn" onclick="startNewChat()" style="background:var(--mint); color:var(--ink-950); font-weight:700; border:1px solid var(--line);">➕ New Chat</button>
       </div>
       <div class="session-list" id="sessionListContainer">
         <!-- Sessions rendered dynamically -->
@@ -80,42 +79,76 @@
     <div class="resizer-col" id="chatSidebarResizer" data-resizer="chatSidebar" title="Drag to resize sidebar, double-click to reset"></div>
 
     <!-- ══════════════════════════════════════════════════════════════
-         TAB 1: AI ADVISOR CHAT
+         UNIFIED TAB: SWARM AGENT (CONVERSATION & CONTINUOUS LOOP)
          ══════════════════════════════════════════════════════════════ -->
     <div class="tab-content active" id="tabChat">
+      
+      <!-- Agent Live Control & Status Bar -->
+      <div class="agent-control-bar" id="agentControlBar">
+        <div class="agent-control-bar__left">
+          <span class="agent-brand-pill">🌌 Swarm Agent</span>
+          <span class="status-badge badge-idle" id="agentLoopStatusBadge">IDLE / READY</span>
+          <span class="agent-active-task-pill" id="agentActiveTaskPill" style="display:none;"></span>
+        </div>
+        <div class="agent-control-bar__actions">
+          <button class="action-btn action-btn--success" id="agentStartBtn" onclick="startAutonomousLoopFromInput()" title="Start continuous autonomous loop on current prompt">▶️ Run Loop</button>
+          <button class="action-btn action-btn--warn" id="agentResumeBtn" onclick="resumeAutonomousLoop()" style="display:none;" title="Resume paused loop">▶️ Resume</button>
+          <button class="action-btn action-btn--warn" id="agentPauseBtn" onclick="pauseAutonomousLoop()" style="display:none;" title="Pause loop">⏸️ Pause</button>
+          <button class="action-btn action-btn--solid-danger" id="agentStopBtn" onclick="stopAutonomousLoop()" style="display:none;" title="Stop loop">⏹️ Stop</button>
+          <button class="action-btn" onclick="switchTab('git')" title="Jump to Git Desktop to inspect diffs, stage & commit">🌿 Git Desktop</button>
+          <button class="action-btn" onclick="toggleDebugDrawer()" title="Activity diagnostics and live logs">🐞 Logs</button>
+          <button class="action-btn danger" onclick="confirmClearCurrentSession()" title="Clear chat conversation">🗑️</button>
+        </div>
+      </div>
+
+      <!-- Live Active Loop Progress Strip (Visible when loop is running/active) -->
+      <div class="agent-progress-strip" id="agentProgressStrip" style="display:none;">
+        <div class="agent-progress-header">
+          <div class="agent-progress-title">
+            <span class="loop-spinner"></span>
+            <span id="agentProgressGoal">Autonomous feature development in progress…</span>
+          </div>
+          <span class="agent-iter-badge" id="agentProgressIter">Iter 1/20</span>
+        </div>
+        <div class="agent-phase-pills" id="agentPhasePills">
+          <div class="phase-pill" id="phasePlan"><span class="phase-icon">📋</span> Planning</div>
+          <div class="phase-pill" id="phaseDev"><span class="phase-icon">⚙️</span> Implementing</div>
+          <div class="phase-pill" id="phaseQA"><span class="phase-icon">✅</span> Verifying</div>
+        </div>
+      </div>
+
+      <!-- Main Scrollable Conversation Stream -->
       <div class="chat-container" id="chatContainer">
         <div class="msg-row" id="welcomeMsgRow">
           <div class="msg-assistant">
             <div class="msg-header">
-              <div class="msg-author">🤖 Lead Advisor</div>
-              <span class="status-badge badge-online" id="sessionStatusBadge">Ready</span>
+              <div class="msg-author">🌌 Swarm Autonomous Agent</div>
+              <span class="status-badge badge-online" id="sessionStatusBadge">Ready · Liquid LFM 2.5 VL (3B)</span>
             </div>
             <div class="markdown-body">
-              <p>Welcome to <b>Swarm AI Studio</b>.</p>
+              <p>Welcome to <b>Swarm AI Studio</b> — Unified Autonomous Coding Agent.</p>
+              <p>Talk with the agent naturally or assign engineering goals. It will continuously reason, draft code with Pi agent tools, run tests, audit security, and commit verified changes.</p>
               <ul>
-                <li><b>Auto-Loop</b> — continuous autonomous feature development with PM / Dev / QA / Review roles and live Lead Advisor escalation.</li>
-                <li><b>Git Desktop</b> — inspect diffs, stage, commit, push, switch branches, stash, and manage worktrees.</li>
-                <li><b>Contracts</b> — discover OpenAPI, AsyncAPI, Protobuf, FlatBuffers, statecharts and CEL invariants across the repo.</li>
-                <li><b>Multi-chat persistence</b> — independent session histories saved across reloads and LAN devices.</li>
+                <li><b>Continuous Agentic Loop</b> — Pre-Flight Scout → CBO Planning → Pi Dev Draftsman → QA &amp; Pytest Gate → Security Audit → Auto-Judge &amp; Git Commit.</li>
+                <li><b>Interactive Steering</b> — Chat with the agent while it works, answer escalation questions, pause, resume, or redirect.</li>
+                <li><b>Integrated Git Desktop</b> — Visual inspection of diffs, staged changes, branches, stashes, and worktrees.</li>
               </ul>
             </div>
           </div>
         </div>
       </div>
 
+      <!-- Bottom Chat & Task Input Section -->
       <div class="input-section">
         <div class="input-wrapper">
-          <div class="quick-actions">
-            <button class="action-btn action-btn--accent" onclick="transferAdvisorChatToLoop()" title="Synthesize this conversation and launch the Auto-Dev Loop">🚀 Transfer to Auto-Dev Loop</button>
-            <button class="action-btn" onclick="sendQuickPrompt('Run a comprehensive security, performance, and architecture audit on this repository.')">🛡️ Full swarm audit</button>
-            <button class="action-btn" onclick="sendQuickPrompt('Scan the repository files and locate all entrypoints and project manifests.')">🔍 Scout files</button>
-            <button class="action-btn" onclick="sendQuickPrompt('Design an ultra-low latency caching layer with distributed locks.')">⚡ Design blueprint</button>
-            <button class="action-btn" onclick="pasteFromClipboard()">📋 Paste clipboard</button>
-            <button class="action-btn danger" onclick="confirmClearCurrentSession()">🗑️ Clear chat</button>
+          <div class="chat-mode-pills">
+            <button class="chat-mode-pill active" id="modeChatBtn" onclick="setChatMode('chat')" title="Conversational coding help">💬 Chat</button>
+            <button class="chat-mode-pill" id="modeApplyBtn" onclick="setChatMode('apply')" title="Apply code changes directly">🛠️ Apply</button>
+            <button class="chat-mode-pill" id="modeLoopBtn" onclick="setChatMode('loop')" title="Full autonomous loop">🔁 Auto-Dev</button>
           </div>
 
           <div class="input-row">
-            <textarea id="promptInput" placeholder="Ask anything, assign a task, or review code…  (↑ / ↓ for history)" oninput="autoResize(this)"></textarea>
+            <textarea id="promptInput" placeholder="Ask anything, assign a task, or run an autonomous loop… (Enter to send, Shift+Enter for newline)" oninput="autoResize(this)"></textarea>
             <button class="send-btn" id="sendBtn" onclick="submitMessage()">
               <span id="btnIcon">➔</span>
               <span id="btnText">Send</span>
@@ -125,122 +158,8 @@
       </div>
     </div>
 
-    <!-- ══════════════════════════════════════════════════════════════
-         TAB 2: AUTONOMOUS LOOP AGENT DASHBOARD
-         ══════════════════════════════════════════════════════════════ -->
-    <div class="tab-content" id="tabLoop">
-      <div class="loop-dashboard">
-
-        <!-- Loop Session Selector Bar -->
-        <div class="loop-session-bar">
-          <div class="loop-session-bar__group">
-            <span class="header-label">🔄 Loop run</span>
-            <select id="loopSessionSelect" class="repo-select" onchange="onLoopSessionChanged()">
-              <option value="">Loading loop runs…</option>
-            </select>
-            <button class="action-btn action-btn--accent" onclick="createNewLoopSessionUI()">➕ New run</button>
-          </div>
-          <div class="loop-session-bar__group">
-            <span class="linked-advisor-badge" id="loopLinkedAdvisorBadge" onclick="jumpToLinkedAdvisorSession()" title="Open the linked Advisor chat session">💬 Linked advisor chat ↗</span>
-            <button class="action-btn danger action-btn--sm" onclick="deleteCurrentLoopSessionUI()" title="Delete active loop session">🗑️ Delete run</button>
-          </div>
-        </div>
-
-        <!-- Resizable Split View: Left (Controls + Kanban) | Right (Telemetry + Consultations + Deliverable) -->
-        <div class="loop-split-container" id="loopSplitContainer">
-
-          <!-- Left Pane: Loop Control & Task Pipeline Kanban -->
-          <div class="loop-left-pane" id="loopLeftPane">
-
-            <div class="loop-control-card">
-              <div class="loop-control-head">
-                <div class="panel-bar__text">
-                  <div class="panel-bar__title">
-                    <span>🔄 Autonomous swarm loop</span>
-                    <span class="status-badge badge-idle" id="loopStatusBadge">IDLE</span>
-                  </div>
-                  <div class="panel-bar__sub">
-                    Decomposes a feature into PM, Dev, QA and Review tasks, runs them across local GPU slots, and escalates to the Lead Advisor.
-                  </div>
-                </div>
-
-                <div class="loop-control-actions">
-                  <button class="action-btn action-btn--success action-btn--lg" id="loopStartBtn" onclick="startAutonomousLoop()">▶️ Start loop</button>
-                  <button class="action-btn action-btn--warn action-btn--lg" id="loopResumeBtn" onclick="resumeAutonomousLoop()" style="display:none;">▶️ Resume</button>
-                  <button class="action-btn action-btn--warn action-btn--lg" id="loopPauseBtn" onclick="pauseAutonomousLoop()" style="display:none;">⏸️ Pause</button>
-                  <button class="action-btn action-btn--solid-danger action-btn--lg" id="loopStopBtn" onclick="stopAutonomousLoop()" style="display:none;">⏹️ Stop</button>
-                </div>
-              </div>
-
-              <div class="loop-goal-field">
-                <textarea id="loopGoalInput" placeholder="Target feature or engineering goal to automate — e.g. “Implement Redis distributed caching with locks and invalidation, add QA unit tests, and run a security review”…"></textarea>
-
-                <div class="quick-actions">
-                  <span class="header-label">Templates</span>
-                  <button class="action-btn action-btn--sm" onclick="setLoopGoalPrompt('Implement Redis Distributed Caching with Lock &amp; Invalidation, add QA unit tests, and perform security review')">⚡ Redis caching</button>
-                  <button class="action-btn action-btn--sm" onclick="setLoopGoalPrompt('Build API Key Authentication Middleware with Rate Limiter &amp; Regression Tests')">🛡️ API key auth</button>
-                  <button class="action-btn action-btn--sm" onclick="setLoopGoalPrompt('Audit all database queries for N+1 problems and optimize indexes')">🔍 DB optimizer</button>
-                </div>
-              </div>
-
-              <!-- Active Sub-Agent Working Indicator (populated dynamically) -->
-              <div id="loopActiveAgentBox" class="loop-active-agent-box"></div>
-            </div>
-
-            <!-- Task Pipeline Kanban Grid -->
-            <div class="panel panel--well">
-              <div class="section-title">📋 Task pipeline · PM → Dev → QA → Review</div>
-              <div class="loop-pipeline-grid" id="loopTaskGrid">
-                <div class="empty-state">Awaiting a goal. Start the loop to decompose it into role-assigned tasks.</div>
-              </div>
-            </div>
-
-          </div>
-
-          <!-- Draggable Resizer between Loop Controls and Telemetry -->
-          <div class="resizer-col" id="loopSplitResizer" data-resizer="loop" title="Drag to resize, double-click to reset"></div>
-
-          <!-- Right Pane: Live Telemetry, Advisor Consultations, Final Summary -->
-          <div class="loop-right-pane" id="loopRightPane">
-
-            <div class="loop-telemetry-card" id="loopTelemetryCard">
-              <div class="loop-card-head">
-                <div class="section-title section-title--accent">
-                  <span>📡 Live execution stream</span>
-                  <span class="file-status-badge status-a" id="loopStreamLiveBadge">ACTIVE</span>
-                </div>
-                <button class="ghd-mini-btn" onclick="clearLoopLiveStream()" title="Clear stream log">Clear</button>
-              </div>
-              <div class="loop-live-stream" id="loopLiveLogStream">
-                <div class="empty-state--inline">Awaiting autonomous swarm execution events…</div>
-              </div>
-            </div>
-
-            <div class="loop-telemetry-card">
-              <div class="loop-card-head">
-                <div class="section-title section-title--purple">
-                  <span>👑 Sub-agent → Lead Advisor consultations</span>
-                  <span class="file-status-badge status-u">LIVE</span>
-                </div>
-              </div>
-              <div id="loopAdvisorPingsContainer">
-                <div class="empty-state--inline">
-                  Sub-agents ping the Lead Advisor automatically whenever they hit a blocker or need architectural guidance.
-                </div>
-              </div>
-            </div>
-
-            <div id="loopFinalSummaryContainer" class="loop-final-summary">
-              <div class="section-title section-title--accent">🎉 Completed deliverable &amp; sign-off</div>
-              <div id="loopFinalSummaryContent" class="markdown-body"></div>
-            </div>
-
-          </div>
-
-        </div>
-
-      </div>
-    </div>
+    <!-- Hidden compatibility container for loop selectors if referenced by scripts -->
+    <div id="tabLoop" style="display:none;"></div>
 
     <!-- ══════════════════════════════════════════════════════════════
          TAB 3: GITHUB DESKTOP SUITE
@@ -457,7 +376,7 @@
         <!-- Super-Orchestrator Multi-Engine Matrix -->
         <div class="panel panel--well">
           <div class="section-head">
-            <span class="eyebrow">⚡ Pluggable execution engines &amp; bridges</span>
+            <span class="eyebrow">⚡ Backend Status</span>
             <button class="action-btn action-btn--purple action-btn--sm" onclick="testAllEnginesDiagnostic()">
               🧪 Run all engine diagnostics
             </button>
@@ -465,65 +384,6 @@
           <div id="superOrchestratorEnginesGrid" class="engines-grid">
             <!-- Populated via GET /api/backends/status -->
           </div>
-        </div>
-
-        <!-- Level 1: Master Orchestrator -->
-        <div class="topo-tier">
-          <div class="agent-card agent-card--lead" id="node-gemini">
-            <div class="agent-card__head">
-              <span class="agent-card__name">👑 Gemini Lead Advisor</span>
-              <span class="status-badge badge-idle" id="badge-gemini">IDLE</span>
-            </div>
-            <div class="agent-card__role">Level 1 · Chief architect &amp; task decomposer</div>
-            <div class="model-field">
-              <label class="model-field__label" for="select-gemini">MODEL</label>
-              <select class="card-model-select" id="select-gemini" onchange="updateModelAssignment('gemini', this.value)">
-                <option value="">Scouting models…</option>
-              </select>
-            </div>
-            <div class="agent-task" id="task-gemini">Awaiting user task…</div>
-          </div>
-        </div>
-
-        <div class="topo-connector"></div>
-
-        <!-- Level 2: Consensus Oracles -->
-        <div class="topo-tier">
-          <div class="agent-card agent-card--peer" id="node-lfm">
-            <div class="agent-card__head">
-              <span class="agent-card__name agent-card__name--accent">⚡ Local GPU swarm host</span>
-              <span class="status-badge badge-online" id="badge-lfm">ONLINE</span>
-            </div>
-            <div class="agent-card__role">Level 2 · Dynamic batching host (8 slots)</div>
-            <div class="agent-note">Dedicated: Liquid LFM 2.5 (2.6B Q8)</div>
-            <div class="agent-task" id="task-lfm">Port 8034 · 8 continuous batching slots</div>
-          </div>
-
-          <div class="agent-card agent-card--peer" id="node-qwen">
-            <div class="agent-card__head">
-              <span class="agent-card__name agent-card__name--green">🔮 Qwen web oracle</span>
-              <span class="status-badge badge-online" id="badge-qwen">READY</span>
-            </div>
-            <div class="agent-card__role">Level 2 · Adversarial consensus peer</div>
-            <div class="model-field">
-              <label class="model-field__label" for="select-qwen">MODEL</label>
-              <select class="card-model-select" id="select-qwen" onchange="updateModelAssignment('qwen', this.value)">
-                <option value="qwen-3.8-max">Qwen 3.8 Max</option>
-                <option value="qwen-3.8-coder">Qwen 3.8 Coder</option>
-                <option value="qwen-3.8-thinking">Qwen 3.8 Thinking</option>
-                <option value="qwen-3.8-27b">Qwen 3.8 27B</option>
-              </select>
-            </div>
-            <div class="agent-task" id="task-qwen">chat.qwen.ai session (Qwen 3.8 Max)</div>
-          </div>
-        </div>
-
-        <div class="topo-connector"></div>
-
-        <!-- Level 3: Dynamic Sub-Agents -->
-        <span class="eyebrow">Level 3 · Dynamic sub-agents (scaled 1–8 by task complexity)</span>
-        <div class="topo-tier" id="dynamicSubagentsContainer">
-          <!-- Populated dynamically -->
         </div>
 
         <!-- Capacity Matrix Legend -->
@@ -933,6 +793,6 @@
   <!-- CUSTOM RIGHT-CLICK CONTEXT MENU -->
   <div id="customContextMenu" class="custom-context-menu" style="display:none;" onclick="event.stopPropagation()"></div>
 
-  <script src="/js/app.js"></script>
+  <script src="/js/app.js?v=dark-mint-5"></script>
 </body>
 </html>

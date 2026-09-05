@@ -44,3 +44,6 @@ swarm_studio.log
 *~
 .DS_Store
 Thumbs.db
+.gsd/
+.bg-shell/
+

@@ -62,6 +62,18 @@ def scout_qwen_models() -> List[Dict[str, str]]:
         {"id": "qwen-2.5-max", "name": "Qwen 2.5 Max", "provider": "qwen", "tier": "Legacy Max"}
     ]
 
+def scout_lfm_models() -> List[Dict[str, str]]:
+    return [
+        {"id": "Qwen3.8-27B-UD-Q3_K_XL.gguf", "name": "Qwen 3.8 27B UD-Q3_K_XL (MTP Drafter · Full GPU)", "provider": "local_gpu", "tier": "Local GPU (4 Slots · Fast)"},
+        {"id": "Qwen3.6-35B-A3B-UD-Q6_K_XL.gguf", "name": "Qwen 3.6 35B A3B UD-Q6_K_XL (High Precision MoE)", "provider": "local_gpu", "tier": "Local GPU (2 Slots · High Precision)"},
+        {"id": "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf", "name": "Qwen 3.6 35B A3B UD-Q4_K_M (Balanced MoE)", "provider": "local_gpu", "tier": "Local GPU (2 Slots · Balanced)"},
+        {"id": "Qwen3.5-9B-Q8_0.gguf", "name": "Qwen 3.5 9B Q8_0 (131K Context · Ultra Fast)", "provider": "local_gpu", "tier": "Local GPU (4 Slots · Ultra Fast)"},
+        {"id": "qwen-3.8-27b-coder-q4_k_s.gguf", "name": "Qwen 3.8 27B Coder (Legacy Alias)", "provider": "local_gpu", "tier": "Local GPU (Legacy)"},
+        {"id": "LFM2.5-VL-3B-Q8_0.gguf", "name": "Liquid LFM 2.5 VL (3B Q8 Vision)", "provider": "liquid_lfm", "tier": "Fast Satellite (150 t/s)"},
+        {"id": "lfm2.5-vl-3b", "name": "Liquid LFM 2.5 VL 3B (Alias)", "provider": "liquid_lfm", "tier": "Fast Satellite"},
+        {"id": "LFM2.5-2.6B-Q8_0.gguf", "name": "Liquid LFM 2.5 (2.6B Q8 Dense)", "provider": "liquid_lfm", "tier": "Fast Satellite"}
+    ]
+
 def scout_all_models(force_refresh: bool = False) -> Dict[str, Any]:
     now = time.time()
     if not force_refresh and (now - SCOUTED_MODELS_CACHE["last_scouted"] < 60) and SCOUTED_MODELS_CACHE["catalog"]["gemini"]:
@@ -69,7 +81,8 @@ def scout_all_models(force_refresh: bool = False) -> Dict[str, Any]:
 
     catalog = {
         "gemini": scout_gemini_models(),
-        "qwen": scout_qwen_models()
+        "qwen": scout_qwen_models(),
+        "lfm": scout_lfm_models()
     }
     SCOUTED_MODELS_CACHE["catalog"] = catalog
     SCOUTED_MODELS_CACHE["last_scouted"] = now
@@ -83,7 +96,8 @@ def load_model_assignments() -> Dict[str, str]:
             pass
     return {
         "gemini": "gemini-3.1-pro-high",
-        "qwen": "qwen-3.8-max"
+        "qwen": "qwen-3.8-max",
+        "lfm": "Qwen3.8-27B-UD-Q3_K_XL.gguf"
     }
 
 def save_model_assignments(assignments: Dict[str, str]):
@@ -91,3 +105,4 @@ def save_model_assignments(assignments: Dict[str, str]):
         MODELS_CONFIG_FILE.write_text(json.dumps(assignments, indent=2))
     except Exception:
         pass
+

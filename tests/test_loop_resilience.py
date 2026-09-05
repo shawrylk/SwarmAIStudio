@@ -288,12 +288,6 @@ class TestLoopResilience(unittest.TestCase):
                         "<|tool_call_start|>[write(path='src/checkpoint.py', "
                         "content='def checkpoint_code():\\n    return True\\n')]<|tool_call_end|>"
                     )
-                elif "ZERO-TRUST QA MANDATE" in pu:
-                    return "VERDICT: PASSED"
-                elif "ZERO-TRUST SECURITY MANDATE" in pu:
-                    return "VERDICT: PASSED"
-                elif "AUTONOMOUS SWARM AUTO-JUDGE" in pu:
-                    return "DECISION: APPROVED (Certificate: Verified)"
                 return "OK"
 
             with patch("swarm.loop_engine.save_loop_session", side_effect=checkpoint_tracker), \
@@ -318,9 +312,6 @@ class TestLoopResilience(unittest.TestCase):
         # Verify all granular checkpoint stages were recorded:
         recorded_stages = [r[0] for r in stage_records]
         self.assertIn("dev_draft_completed", recorded_stages)
-        self.assertIn("qa_completed", recorded_stages)
-        self.assertIn("security_completed", recorded_stages)
-        self.assertIn("oracle_completed", recorded_stages)
         self.assertIn("judge_completed", recorded_stages)
         self.assertEqual(task["status"], "completed")
 
@@ -416,12 +407,6 @@ class TestLoopResilience(unittest.TestCase):
                     else:
                         # Second attempt with advisor guidance & learned rule applied
                         return "<|tool_call_start|>[write(path='src/model.py', content='from typing import List\\nclass Fixed: pass\\n')]<|tool_call_end|>"
-                if "ZERO-TRUST QA MANDATE" in pu:
-                    return "VERDICT: PASSED" if call_counts["dev"] > 1 else "VERDICT: FAILED (Reason: Missing typing imports)"
-                if "ZERO-TRUST SECURITY MANDATE" in pu:
-                    return "VERDICT: PASSED"
-                if "AUTONOMOUS SWARM AUTO-JUDGE" in pu:
-                    return "DECISION: APPROVED" if call_counts["dev"] > 1 else "DECISION: REJECTED (Diagnostics: Fix imports)"
                 return "OK"
 
             async def mock_query_gemini(prompt, **kwargs):
@@ -433,11 +418,16 @@ class TestLoopResilience(unittest.TestCase):
 RULE: In Python domain files, always include standard typing imports (List, Dict, Optional).
 """
 
+            def mock_run_test_suite(*args, **kwargs):
+                if call_counts["dev"] == 1:
+                    return {"success": False, "skipped": False, "runner": "pytest", "exit_code": 1, "output": "Missing typing imports"}
+                return {"success": True, "skipped": False, "runner": "pytest", "exit_code": 0, "output": "OK"}
+
             async def run():
                 with patch("swarm.loop_engine.query_local_slot", side_effect=mock_query_local_slot), \
                      patch("swarm.loop_engine.query_gemini", side_effect=mock_query_gemini), \
                      patch("swarm.loop_engine.query_qwen_web", new_callable=AsyncMock, return_value="ok"), \
-                     patch("swarm.loop_engine.run_test_suite", return_value={"success": True, "skipped": False, "runner": "pytest", "exit_code": 0}), \
+                     patch("swarm.loop_engine.run_test_suite", side_effect=mock_run_test_suite), \
                      patch("swarm.loop_engine.commit_changes") as mock_commit:
                     
                     le.LOOP_STATE["learned_rules"] = []

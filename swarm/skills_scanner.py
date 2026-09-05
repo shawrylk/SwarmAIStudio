@@ -480,22 +480,27 @@ def resolve_and_inject_skill(role: str, task_description: str = "", repo_path: s
         "dev": ["tdd", "best-practices", "code-optimizer", "react-best-practices", "frontend-design", "api-design", "gitnexus-refactoring"],
         "qa": ["verify-before-complete", "test", "tdd", "debug-like-expert", "lint", "web-quality-audit"],
         "review": ["security-review", "review", "best-practices", "observability", "gitnexus-taint-analysis", "gitnexus-pr-review"],
-        "security": ["security-review", "review", "best-practices", "gitnexus-taint-analysis", "permissioned-github"],
-        "pm": ["write-milestone-brief", "decompose-into-slices", "grill-me", "api-design", "design-an-interface", "create-workflow"],
+        "security": ["security-review", "review", "gitnexus-taint-analysis", "best-practices"],
+        "pm": ["write-milestone-brief", "api-design", "design-an-interface", "create-workflow"],
         "research": ["context7-docs", "gitnexus-exploring", "agent-browser", "ask-claude", "api-design", "write-docs"],
-        "arch": ["design-an-interface", "api-design", "decompose-into-slices", "planner-cbo", "context7-docs"],
-        "oracle": ["verify-before-complete", "ask-claude", "review", "grill-me", "debug-like-expert"],
-        "consensus": ["verify-before-complete", "ask-claude", "review", "grill-me"],
-        "judge": ["verify-before-complete", "review", "forensics", "debug-like-expert"]
+        "arch": ["design-an-interface", "api-design", "planner-cbo", "context7-docs"]
     }
 
     prefs = role_preferences.get(role_clean, ["best-practices", "tdd", "verify-before-complete"])
 
+    DISALLOWED_AUDIT_SKILLS = {
+        "design-an-interface", "handoff", "write-milestone-brief",
+        "decompose-into-slices", "planner-cbo", "create-workflow", "grill-me"
+    }
+
     # Score each candidate skill
     scored_candidates = []
     for skill in all_skills:
-        score = 0
         sid = skill["id"]
+        if role_clean in {"qa", "security", "oracle", "judge", "consensus"} and sid in DISALLOWED_AUDIT_SKILLS:
+            continue
+
+        score = 0
         s_name = skill["name"].lower()
         s_desc = skill["description"].lower()
         s_cat = skill.get("category", "").lower()
@@ -554,6 +559,8 @@ Skill Directives & Execution Protocol:
 =================================================================="""
 
     log_event("info", "skills", f"Injected skill '{selected_skill['id']}' ({selected_skill['name']}) for role '{role}'")
+
+    injection_prompt = injection_prompt[:500] + '...' if len(injection_prompt) > 500 else injection_prompt
 
     return {
         "skill_id": selected_skill["id"],

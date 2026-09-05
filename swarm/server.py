@@ -218,7 +218,7 @@ class SwarmHandler(BaseHTTPRequestHandler):
             self._send_json({"logs": get_live_logs(limit)})
 
         # 3. Telemetry & Swarm Metrics (one-shot; SSE below is the live channel)
-        elif parsed.path in ('/api/metrics', '/api/status'):
+        elif parsed.path in ('/api/metrics', '/api/status', '/api/health'):
             self._send_json(build_state_snapshot())
 
         # 3b. Real-time state stream (Server-Sent Events).
@@ -437,13 +437,10 @@ class SwarmHandler(BaseHTTPRequestHandler):
             self._send_json(stop_loop())
 
         elif parsed.path == '/api/loop/answer':
-            # Answer a task the escalation ladder parked for the operator. The
-            # answer becomes authoritative guidance and the task is requeued, so
-            # a run that hit the end of its automated tiers can continue.
             task_id = (payload.get("task_id") or "").strip()
-            answer = (payload.get("answer") or "").strip()
-            if not task_id or not answer:
-                self._send_json({"success": False, "error": "task_id and answer are required"}, status=400)
+            answer = (payload.get("answer") or payload.get("guidance") or "").strip()
+            if not answer:
+                self._send_json({"success": False, "error": "answer or guidance is required"}, status=400)
             else:
                 self._send_json(answer_user_question(task_id, answer))
 
@@ -517,19 +514,101 @@ class SwarmHandler(BaseHTTPRequestHandler):
             finally:
                 loop.close()
 
-        # 4. Chat Execution with Dynamic CBO Planning
+        # 4. Chat Execution with Dynamic CBO Planning & Autonomous Loop
         elif parsed.path == '/api/chat':
             message = payload.get("message", "")
             repo_path = payload.get("repo_path", "")
             session_id = payload.get("session_id", "")
-            log_event("info", "chat", f"Starting chat prompt: '{message[:50]}...'", {"repo": Path(repo_path).name if repo_path else "None"})
+            mode = payload.get("mode", "auto")
+            log_event("info", "chat", f"Starting chat prompt: '{message[:50]}...'", {"repo": Path(repo_path).name if repo_path else "None", "mode": mode})
 
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            result = loop.run_until_complete(process_advisor_chat(message, repo_path, session_id))
-            loop.close()
-            
-            self._send_json(result)
+            msg_lower = message.lower()
+            is_loop_request = (mode == "loop")
+
+            if is_loop_request and repo_path:
+                res = start_loop(goal=message, repo_path=repo_path, advisor_session_id=session_id)
+                turn_dict = {
+                    "prompt": message,
+                    "answer": f"🔁 **Auto-Dev Started**\n\n**Goal:** {message}\n\nPipeline: Planning → Implementing → Verifying",
+                    "status_steps": ["🔁 Starting auto-dev pipeline", "📋 Planning tasks", "🔍 Analyzing codebase..."],
+                    "timestamp": int(time.time() * 1000)
+                }
+                save_session_turn(session_id, turn_dict, repo_path=repo_path)
+                self._send_json({
+                    "success": True,
+                    "type": "loop_started",
+                    "goal": message,
+                    "session_id": session_id,
+                    "loop_id": res.get("id"),
+                    "status": "running",
+                    "answer": f"🔁 **Auto-Dev Started**\n\n**Goal:** {message}\n\nPipeline: Planning → Implementing → Verifying",
+                    "status_steps": ["🔁 Starting auto-dev pipeline", "📋 Planning tasks", "🔍 Analyzing codebase..."],
+                    "duration": 0.3
+                })
+            else:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                result = loop.run_until_complete(process_advisor_chat(message, repo_path, session_id))
+                loop.close()
+                self._send_json(result)
+
+        # 4b. Apply Mode — Pi Agent direct code application
+        elif parsed.path == '/api/chat/apply':
+            message = payload.get("message", "")
+            repo_path = payload.get("repo_path", "")
+            session_id = payload.get("session_id", "")
+            log_event("info", "apply", f"Apply mode: '{message[:50]}...'")
+
+            if not repo_path:
+                self._send_json({"success": False, "error": "No repository selected"}, status=400)
+            else:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                try:
+                    from swarm.pi_agent import run_pi_agent
+                    pi_res = loop.run_until_complete(run_pi_agent(
+                        message, repo_path,
+                        system="You are a coding assistant. Read the relevant files, understand the codebase, then make the requested changes. Write clean, production-ready code.",
+                        timeout=120
+                    ))
+                    answer = pi_res.get("text", "")
+                    tool_calls = pi_res.get("tool_calls", [])
+                    files_changed = [t.get("name", "") + ": " + str(t.get("args", {}).get("path", "")) for t in tool_calls if t.get("name") in ("write", "edit", "apply_patch")]
+                    
+                    if not pi_res.get("success"):
+                        answer = f"⚠️ Could not apply changes: {pi_res.get('error', 'Pi agent unavailable')}\n\nFalling back to advisory mode."
+                        loop2 = asyncio.new_event_loop()
+                        asyncio.set_event_loop(loop2)
+                        result = loop2.run_until_complete(process_advisor_chat(message, repo_path, session_id))
+                        loop2.close()
+                        self._send_json(result)
+                        return
+                    
+                    status_steps = ["🛠️ Applied code changes via Pi Agent"]
+                    if files_changed:
+                        status_steps.append(f"📝 Modified: {', '.join(files_changed[:5])}")
+                    
+                    response_payload = {
+                        "prompt": message,
+                        "answer": answer,
+                        "status_steps": status_steps,
+                        "tier": "apply",
+                        "thought_summary": "Applied code changes",
+                        "routing": {"selected": ["pi"], "bypassed": []},
+                        "artifact": None,
+                        "plan": None,
+                        "repo_name": Path(repo_path).name if repo_path else "Workspace",
+                        "duration": 0,
+                        "timestamp": int(time.time() * 1000)
+                    }
+                    if session_id:
+                        save_session_turn(session_id, response_payload, repo_path=repo_path)
+                    self._send_json(response_payload)
+                except Exception as e:
+                    log_event("error", "apply", f"Apply mode failed: {e}")
+                    self._send_json({"success": False, "error": str(e)}, status=500)
+                finally:
+                    loop.close()
 
         # 5. Multi-Chat Sessions
         elif parsed.path == '/api/sessions/new':
@@ -825,7 +904,7 @@ def run_server(host: str = HOST, port: int = PORT):
     lan_ips = get_lan_ips()
     log_event("info", "server", f"Swarm AI Studio HTTP Server started on port {port}")
     print("=" * 65)
-    print(f"🚀 Swarm AI Studio (Dynamic GPU Swarm & GitHub Desktop) is LIVE:")
+    print(f"🚀 Swarm AI Studio is LIVE:")
     print(f"   • Local:      http://localhost:{port}")
     for ip in lan_ips:
         print(f"   • LAN Access: http://{ip}:{port}")

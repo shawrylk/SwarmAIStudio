@@ -171,12 +171,6 @@ class TestLoopHappyPathAndStageFailures(unittest.TestCase):
             pu = prompt.upper()
             if "SURGICAL CODE DRAFTSMAN" in pu or "BLOCKING: NO FILES WERE WRITTEN" in pu:
                 return "<|tool_call_start|>[read_file(path='src/missing.py')]<|tool_call_end|>"
-            if "ZERO-TRUST QA MANDATE" in pu:
-                return "VERDICT: PASSED"
-            if "ZERO-TRUST SECURITY MANDATE" in pu:
-                return "VERDICT: PASSED"
-            if "AUTONOMOUS SWARM AUTO-JUDGE" in pu:
-                return "DECISION: APPROVED"
             return "OK"
 
         async def run():
@@ -190,13 +184,10 @@ class TestLoopHappyPathAndStageFailures(unittest.TestCase):
                 return out, mock_commit
 
         result, mock_commit = asyncio.run(run())
-        # A task that fails its gate is never "completed": it escalates to a tier
-        # that differs in kind ("pending" for another pass) or parks for the
-        # operator ("blocked"). What must never happen is a fabricated approval.
         self.assertIn(result["status"], ("pending", "blocked"))
         self.assertNotEqual(result["status"], "completed")
         self.assertEqual(result["files_written"], [])
-        self.assertIn("dev wrote no files", result.get("failure_reasons", []))
+        self.assertIn("No files were written or modified.", result.get("failure_reasons", []))
         mock_commit.assert_not_called()
 
     # ─────────────────────────────────────────────────────────────
@@ -214,12 +205,6 @@ class TestLoopHappyPathAndStageFailures(unittest.TestCase):
             pu = prompt.upper()
             if "SURGICAL CODE DRAFTSMAN" in pu:
                 return "<|tool_call_start|>[write(path='src/math.py', content='def add(a, b): return a - b\\n')]<|tool_call_end|>"
-            if "ZERO-TRUST QA MANDATE" in pu:
-                return "VERDICT: FAILED (Reason: AssertionError in test_add)"
-            if "ZERO-TRUST SECURITY MANDATE" in pu:
-                return "VERDICT: PASSED"
-            if "AUTONOMOUS SWARM AUTO-JUDGE" in pu:
-                return "DECISION: REJECTED (Diagnostics: Fix math logic)"
             return "OK"
 
         async def run():
@@ -234,13 +219,9 @@ class TestLoopHappyPathAndStageFailures(unittest.TestCase):
                 return out, mock_commit
 
         result, mock_commit = asyncio.run(run())
-        # A task that fails its gate is never "completed": it escalates to a tier
-        # that differs in kind ("pending" for another pass) or parks for the
-        # operator ("blocked"). What must never happen is a fabricated approval.
         self.assertIn(result["status"], ("pending", "blocked"))
         self.assertNotEqual(result["status"], "completed")
-        self.assertFalse(result.get("qa_passed"))
-        self.assertIn("QA verdict not PASSED", result.get("failure_reasons", []))
+        self.assertIn("test suite failed (exit 1)", result.get("failure_reasons", []))
         mock_commit.assert_not_called()
 
     # ─────────────────────────────────────────────────────────────
@@ -287,138 +268,7 @@ class TestLoopHappyPathAndStageFailures(unittest.TestCase):
         self.assertTrue(any("infrastructure" in r for r in result.get("failure_reasons", [])))
         mock_commit.assert_not_called()
 
-    # ─────────────────────────────────────────────────────────────
-    # 6. STAGE 3: SECURITY THREAT AUDIT FAILURE
-    # ─────────────────────────────────────────────────────────────
-    def test_stage_3_security_vulnerability_rejects_task(self):
-        """Stage 3: Security Auditor detects SQL injection -> Auto-Judge rejects -> task fails."""
-        task = {
-            "id": "task-sec-fail", "order": 1, "title": "SQL Query Endpoint",
-            "role": "dev", "description": "Write query", "acceptance_criteria": "pass",
-            "status": "pending", "attempts": 0, "advisor_consultations": [],
-        }
 
-        async def mock_query_local_slot(prompt, system="", **kwargs):
-            pu = prompt.upper()
-            if "SURGICAL CODE DRAFTSMAN" in pu:
-                return "<|tool_call_start|>[write(path='src/db.py', content='def get_user(name): db.execute(f\"SELECT * FROM users WHERE name = {name}\")\\n')]<|tool_call_end|>"
-            if "ZERO-TRUST QA MANDATE" in pu:
-                return "VERDICT: PASSED"
-            if "ZERO-TRUST SECURITY MANDATE" in pu:
-                return "VERDICT: FAILED (Reason: Critical SQL Injection vulnerability in get_user)"
-            if "AUTONOMOUS SWARM AUTO-JUDGE" in pu:
-                return "DECISION: REJECTED (Diagnostics: Fix SQL Injection vulnerability)"
-            return "OK"
-
-        async def run():
-            with patch("swarm.loop_engine.query_local_slot", side_effect=mock_query_local_slot), \
-                 patch("swarm.loop_engine.query_qwen_web", new_callable=AsyncMock, return_value="ok"), \
-                 patch("swarm.loop_engine.ping_lead_advisor", new_callable=AsyncMock, return_value="g"), \
-                 patch("swarm.loop_engine.run_test_suite", return_value={"success": True, "skipped": False, "runner": "pytest", "exit_code": 0}), \
-                 patch("swarm.loop_engine.commit_changes") as mock_commit:
-                out = await execute_zero_trust_task(
-                    task, repo_block="", repo_path="", research_brief="", github_issue_num=None
-                )
-                return out, mock_commit
-
-        result, mock_commit = asyncio.run(run())
-        # A task that fails its gate is never "completed": it escalates to a tier
-        # that differs in kind ("pending" for another pass) or parks for the
-        # operator ("blocked"). What must never happen is a fabricated approval.
-        self.assertIn(result["status"], ("pending", "blocked"))
-        self.assertNotEqual(result["status"], "completed")
-        self.assertFalse(result.get("security_passed"))
-        self.assertIn("security verdict not PASSED", result.get("failure_reasons", []))
-        mock_commit.assert_not_called()
-
-    # ─────────────────────────────────────────────────────────────
-    # 7. STAGE 4: ADVERSARIAL ORACLE / INVARIANT FAILURE
-    # ─────────────────────────────────────────────────────────────
-    def test_stage_4_oracle_or_invariant_rejection(self):
-        """Stage 4: Adversarial Oracle flags broken invariants -> Auto-Judge rejects -> task fails."""
-        task = {
-            "id": "task-oracle-fail", "order": 1, "title": "State Transition",
-            "role": "dev", "description": "Transition machine", "acceptance_criteria": "pass",
-            "status": "pending", "attempts": 0, "advisor_consultations": [],
-        }
-
-        async def mock_query_local_slot(prompt, system="", **kwargs):
-            pu = prompt.upper()
-            if "SURGICAL CODE DRAFTSMAN" in pu:
-                return "<|tool_call_start|>[write(path='src/state.py', content='state = \"INVALID\"\\n')]<|tool_call_end|>"
-            if "ZERO-TRUST QA MANDATE" in pu:
-                return "VERDICT: PASSED"
-            if "ZERO-TRUST SECURITY MANDATE" in pu:
-                return "VERDICT: PASSED"
-            if "AUTONOMOUS SWARM AUTO-JUDGE" in pu:
-                return "DECISION: REJECTED (Diagnostics: Oracle detected invalid state transition sequence)"
-            return "OK"
-
-        async def run():
-            with patch("swarm.loop_engine.query_local_slot", side_effect=mock_query_local_slot), \
-                 patch("swarm.loop_engine.query_qwen_web", new_callable=AsyncMock, return_value="CRITICAL: Violates SCXML transition state"), \
-                 patch("swarm.loop_engine.ping_lead_advisor", new_callable=AsyncMock, return_value="g"), \
-                 patch("swarm.loop_engine.run_test_suite", return_value={"success": True, "skipped": False, "runner": "pytest", "exit_code": 0}), \
-                 patch("swarm.loop_engine.commit_changes") as mock_commit:
-                out = await execute_zero_trust_task(
-                    task, repo_block="", repo_path="", research_brief="", github_issue_num=None
-                )
-                return out, mock_commit
-
-        result, mock_commit = asyncio.run(run())
-        # A task that fails its gate is never "completed": it escalates to a tier
-        # that differs in kind ("pending" for another pass) or parks for the
-        # operator ("blocked"). What must never happen is a fabricated approval.
-        self.assertIn(result["status"], ("pending", "blocked"))
-        self.assertNotEqual(result["status"], "completed")
-        self.assertIn("auto-judge did not issue DECISION: APPROVED", result.get("failure_reasons", []))
-        mock_commit.assert_not_called()
-
-    # ─────────────────────────────────────────────────────────────
-    # 8. STAGE 5: AUTO-JUDGE GATE DECISION REJECTION
-    # ─────────────────────────────────────────────────────────────
-    def test_stage_5_auto_judge_rejection_after_retries(self):
-        """Stage 5: Auto-Judge explicitly outputs DECISION: REJECTED on every attempt -> task fails cleanly."""
-        task = {
-            "id": "task-judge-reject", "order": 1, "title": "Rejected Feature",
-            "role": "dev", "description": "Implementation", "acceptance_criteria": "Clean Arch",
-            "status": "pending", "attempts": 0, "advisor_consultations": [],
-        }
-
-        async def mock_query_local_slot(prompt, system="", **kwargs):
-            pu = prompt.upper()
-            if "SURGICAL CODE DRAFTSMAN" in pu:
-                return "<|tool_call_start|>[write(path='src/feature.py', content='x = 42\\n')]<|tool_call_end|>"
-            if "ZERO-TRUST QA MANDATE" in pu:
-                return "VERDICT: PASSED"
-            if "ZERO-TRUST SECURITY MANDATE" in pu:
-                return "VERDICT: PASSED"
-            if "AUTONOMOUS SWARM AUTO-JUDGE" in pu:
-                return "DECISION: REJECTED (Diagnostics: Violates Clean Architecture boundaries)"
-            return "OK"
-
-        async def run():
-            with patch("swarm.loop_engine.query_local_slot", side_effect=mock_query_local_slot), \
-                 patch("swarm.loop_engine.query_qwen_web", new_callable=AsyncMock, return_value="ok"), \
-                 patch("swarm.loop_engine.ping_lead_advisor", new_callable=AsyncMock, return_value="g"), \
-                 patch("swarm.loop_engine.run_test_suite", return_value={"success": True, "skipped": False, "runner": "pytest", "exit_code": 0}), \
-                 patch("swarm.loop_engine.commit_changes") as mock_commit:
-                out = await execute_zero_trust_task(
-                    task, repo_block="", repo_path="", research_brief="", github_issue_num=None
-                )
-                return out, mock_commit
-
-        result, mock_commit = asyncio.run(run())
-        # A task that fails its gate is never "completed": it escalates to a tier
-        # that differs in kind ("pending" for another pass) or parks for the
-        # operator ("blocked"). What must never happen is a fabricated approval.
-        self.assertIn(result["status"], ("pending", "blocked"))
-        self.assertNotEqual(result["status"], "completed")
-        # attempts resets per escalation tier; the spent budget is recorded.
-        self.assertEqual(result["attempts_at_last_tier"], 3)
-        self.assertEqual(result["tier_history"][0]["attempts"], 3)
-        self.assertIn("auto-judge did not issue DECISION: APPROVED", result.get("failure_reasons", []))
-        mock_commit.assert_not_called()
 
     # ─────────────────────────────────────────────────────────────
     # 9. STAGE 6: FINAL MERGE HONESTY GATE (EMPTY DELIVERABLE)

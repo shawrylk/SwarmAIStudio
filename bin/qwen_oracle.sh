@@ -9,7 +9,7 @@ TARGET_URL="https://chat.qwen.ai"
 
 usage() {
   echo "Usage:"
-  echo "  $0 login                     # Open headed browser to log in with Google"
+  echo "  $0 login                     # Open headed browser to log in with Google (shawry.lk@gmail.com)"
   echo "  $0 ask <model_name> <prompt> # Send question with target model selection"
   echo "  $0 close                     # Close background browser daemon"
   exit 1
@@ -22,6 +22,7 @@ shift
 case "$CMD" in
   login)
     echo "Launching browser for one-time login on ${TARGET_URL}..."
+    echo "Log in with your Google account (shawry.lk@gmail.com)."
     echo "Once logged in, close the browser window or return here."
     npx agent-browser --headed --session-name "$SESSION" open "$TARGET_URL"
     echo "Session saved under '$SESSION'."
@@ -38,6 +39,7 @@ case "$CMD" in
     PROMPT="$*"
 
     if [[ -z "$PROMPT" ]]; then
+      # If only 1 argument was given, treat it as prompt with default model
       PROMPT="$TARGET_MODEL"
       TARGET_MODEL="qwen-3.8-max"
     fi

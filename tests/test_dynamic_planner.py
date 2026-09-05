@@ -1,5 +1,6 @@
 """
-Unit Tests for Task-Aware Dynamic Swarm Planner & Context7 Integration
+Unit Tests for Task-Aware Dynamic Planner
+Validates that the planner selects the right focused agent configuration per task type.
 """
 
 import unittest
@@ -11,31 +12,25 @@ class TestDynamicSwarmPlanner(unittest.TestCase):
         self.assertEqual(len(plan), 1)
         self.assertIn("Scout", plan[0]["name"])
 
-    def test_docs_query_scales_to_context7_scout(self):
+    def test_docs_query_selects_documentation_agent(self):
         plan = plan_dynamic_swarm_for_task("Show me Context7 documentation and latest API example for FastAPI Depends", has_repo=True)
-        names = [a["name"] for a in plan]
-        self.assertTrue(any("Context7" in n for n in names))
+        self.assertEqual(len(plan), 1)
+        self.assertIn("Doc", plan[0]["name"])
 
-    def test_bug_fix_scales_to_4_surgical_agents(self):
+    def test_bug_fix_selects_focused_agent(self):
         plan = plan_dynamic_swarm_for_task("Fix null reference exception in PaymentEngine", has_repo=True)
-        self.assertEqual(len(plan), 4)
-        names = [a["name"] for a in plan]
-        self.assertTrue(any("Scout" in n for n in names))
-        self.assertTrue(any("Draftsman" in n for n in names))
-        self.assertTrue(any("QA" in n or "LSP" in n for n in names))
-        self.assertTrue(any("Gatekeeper" in n for n in names))
+        self.assertEqual(len(plan), 1)
+        self.assertIsNotNone(plan[0]["prompt_template"])
 
-    def test_deep_audit_scales_to_6_specialists(self):
-        plan = plan_dynamic_swarm_for_task("Run a deep security, performance, and architecture audit on this repo", has_repo=True)
-        self.assertEqual(len(plan), 6)
-        skills = [a["skill"] for a in plan]
-        self.assertTrue(any("OWASP" in s for s in skills))
-        self.assertTrue(any("Latency" in s for s in skills))
-        self.assertTrue(any("Architecture" in s for s in skills))
+    def test_code_review_selects_reviewer(self):
+        plan = plan_dynamic_swarm_for_task("Run a deep security and performance audit on this repo", has_repo=True)
+        self.assertEqual(len(plan), 1)
+        self.assertIn("Review", plan[0]["skill"])
 
-    def test_general_chat_scales_to_3_solution_architects(self):
+    def test_general_chat_selects_assistant(self):
         plan = plan_dynamic_swarm_for_task("Explain distributed consensus algorithms", has_repo=False)
-        self.assertEqual(len(plan), 3)
+        self.assertEqual(len(plan), 1)
+        self.assertIn("agent_core", plan[0]["id"])
 
 if __name__ == "__main__":
     unittest.main()

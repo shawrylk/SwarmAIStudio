@@ -6,7 +6,7 @@ import unittest
 import asyncio
 from swarm.engine_bridge import (
     probe_all_backends,
-    test_backend_connection
+    test_backend_connection as probe_backend_connection
 )
 
 class TestEngineBridge(unittest.TestCase):
@@ -23,7 +23,7 @@ class TestEngineBridge(unittest.TestCase):
         self.assertIn("qwen_oracle", backends)
 
     def test_test_backend_connection_context7(self):
-        res = asyncio.run(test_backend_connection("context7_mcp"))
+        res = asyncio.run(probe_backend_connection("context7_mcp"))
         self.assertEqual(res["backend"], "context7_mcp")
         self.assertTrue(res["success"])
 

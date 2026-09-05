@@ -228,8 +228,7 @@ class TestMalformedWriteDetection(unittest.TestCase):
         from swarm.loop_engine import _build_dev_feedback
         fb = _build_dev_feedback(
             {"failure_kind": "code", "output": "ERROR collecting src/test_flock.py"},
-            qa_output="VERDICT: FAILED", sec_output="VERDICT: PASSED",
-            judge_output="DECISION: REJECTED", infra_broken=False, wrote_files=True,
+            infra_broken=False, wrote_files=True,
             malformed_writes=["src/test_flock.py"],
         )
         self.assertIn("LITERAL ESCAPE SEQUENCES", fb)

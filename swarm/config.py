@@ -8,15 +8,15 @@ from pathlib import Path
 PORT = int(os.environ.get("SWARM_PORT", "8080"))
 HOST = os.environ.get("SWARM_HOST", "0.0.0.0")
 
-# Local GPU Engine URL (Continuous Batching LFM 2.5 on port 8034)
+# Local GPU Engine URL (Continuous Batching Qwen 3.8 27B on port 8034)
 LFM_URL = os.environ.get("LFM_URL", "http://localhost:8034/v1/chat/completions")
 LFM_HEALTH_URL = os.environ.get("LFM_HEALTH_URL", "http://localhost:8034/health")
 
 # Auto-Resume on Server Startup (configurable via env SWARM_AUTO_RESUME=1)
 AUTO_RESUME_ON_START = os.environ.get("SWARM_AUTO_RESUME", "1").lower() in ("1", "true", "yes")
 
-# Parallel Multi-Agent Concurrency Settings
-MAX_CONCURRENT_AGENTS = int(os.environ.get("SWARM_MAX_CONCURRENCY", "8"))
+# Parallel Multi-Agent Concurrency Settings (1 Orchestrator + 2 Sub-Agents)
+MAX_CONCURRENT_AGENTS = int(os.environ.get("SWARM_MAX_CONCURRENCY", "3"))
 PARALLEL_AUDIT_PHASE = os.environ.get("SWARM_PARALLEL_AUDIT", "1").lower() in ("1", "true", "yes")
 PARALLEL_TASK_EXECUTION = os.environ.get("SWARM_PARALLEL_TASKS", "1").lower() in ("1", "true", "yes")
 MULTI_WORKTREE_DAG = os.environ.get("SWARM_MULTI_WORKTREE_DAG", "1").lower() in ("1", "true", "yes")

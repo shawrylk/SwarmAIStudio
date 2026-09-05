@@ -11,7 +11,7 @@ class TestSwarmConfig(unittest.TestCase):
     def test_default_concurrency_settings(self):
         import swarm.config as config
         importlib.reload(config)
-        self.assertEqual(config.MAX_CONCURRENT_AGENTS, 8)
+        self.assertEqual(config.MAX_CONCURRENT_AGENTS, 3)
         self.assertTrue(config.PARALLEL_AUDIT_PHASE)
         self.assertTrue(config.PARALLEL_TASK_EXECUTION)
         self.assertTrue(config.MULTI_WORKTREE_DAG)

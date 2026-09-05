@@ -237,6 +237,8 @@ function renderLoopLiveStream() {
     return;
   }
 
+  const isScrolledToBottom = stream.children.length === 0 || (stream.scrollHeight - stream.scrollTop - stream.clientHeight) < 60;
+
   stream.innerHTML = loopLiveStreamLogs.map(l => {
     const tagColors = {
       LOOP: 'var(--accent)',
@@ -256,7 +258,9 @@ function renderLoopLiveStream() {
     `;
   }).join('');
 
-  stream.scrollTop = stream.scrollHeight;
+  if (isScrolledToBottom) {
+    stream.scrollTop = stream.scrollHeight;
+  }
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -373,50 +377,321 @@ function handleServerConnected() {
 }
 
 function switchTab(tabId) {
-  document.getElementById('tabChatBtn').className = (tabId === 'chat') ? 'tab-btn active' : 'tab-btn';
-  document.getElementById('tabLoopBtn').className = (tabId === 'loop') ? 'tab-btn active' : 'tab-btn';
-  document.getElementById('tabGitBtn').className = (tabId === 'git') ? 'tab-btn active' : 'tab-btn';
+  try { localStorage.setItem('swarm_active_tab', tabId); } catch(_) {}
+  const isAgent = (tabId === 'agent' || tabId === 'chat' || tabId === 'loop');
+  const agentBtn = document.getElementById('tabAgentBtn') || document.getElementById('tabChatBtn');
+  if (agentBtn) agentBtn.className = isAgent ? 'tab-btn active' : 'tab-btn';
+  const loopBtn = document.getElementById('tabLoopBtn');
+  if (loopBtn) loopBtn.className = 'tab-btn';
+  const gitBtn = document.getElementById('tabGitBtn');
+  if (gitBtn) gitBtn.className = (tabId === 'git') ? 'tab-btn active' : 'tab-btn';
   const cBtn = document.getElementById('tabContractsBtn');
   if (cBtn) cBtn.className = (tabId === 'contracts') ? 'tab-btn active' : 'tab-btn';
-  document.getElementById('tabTopoBtn').className = (tabId === 'topo') ? 'tab-btn active' : 'tab-btn';
-  document.getElementById('tabVaultBtn').className = (tabId === 'vault') ? 'tab-btn active' : 'tab-btn';
+  const topoBtn = document.getElementById('tabTopoBtn');
+  if (topoBtn) topoBtn.className = (tabId === 'topo') ? 'tab-btn active' : 'tab-btn';
+  const vaultBtn = document.getElementById('tabVaultBtn');
+  if (vaultBtn) vaultBtn.className = (tabId === 'vault') ? 'tab-btn active' : 'tab-btn';
   
-  document.getElementById('tabChat').className = (tabId === 'chat') ? 'tab-content active' : 'tab-content';
-  document.getElementById('tabLoop').className = (tabId === 'loop') ? 'tab-content active' : 'tab-content';
-  document.getElementById('tabGit').className = (tabId === 'git') ? 'tab-content active' : 'tab-content';
+  const chatTab = document.getElementById('tabChat');
+  if (chatTab) chatTab.className = isAgent ? 'tab-content active' : 'tab-content';
+  const loopTab = document.getElementById('tabLoop');
+  if (loopTab) loopTab.className = 'tab-content';
+  const gitTab = document.getElementById('tabGit');
+  if (gitTab) gitTab.className = (tabId === 'git') ? 'tab-content active' : 'tab-content';
   const cTab = document.getElementById('tabContracts');
   if (cTab) cTab.className = (tabId === 'contracts') ? 'tab-content active' : 'tab-content';
-  document.getElementById('tabTopo').className = (tabId === 'topo') ? 'tab-content active' : 'tab-content';
-  document.getElementById('tabVault').className = (tabId === 'vault') ? 'tab-content active' : 'tab-content';
+  const topoTab = document.getElementById('tabTopo');
+  if (topoTab) topoTab.className = (tabId === 'topo') ? 'tab-content active' : 'tab-content';
+  const vaultTab = document.getElementById('tabVault');
+  if (vaultTab) vaultTab.className = (tabId === 'vault') ? 'tab-content active' : 'tab-content';
 
   const sidebar = document.getElementById('chatSidebar');
-  sidebar.style.display = (tabId === 'chat') ? 'flex' : 'none';
+  if (sidebar) sidebar.style.display = isAgent ? 'flex' : 'none';
 
   if (tabId === 'git') loadGitHubDesktopState();
   if (tabId === 'vault') loadArtifactsVault();
   if (tabId === 'contracts') loadContractsCatalog();
-  if (tabId === 'loop') {
-    loadLoopSessionsList();
-    pollLoopState();  // instant one-shot; live updates arrive via the SSE stream
+  if (isAgent) {
+    loadSessionsList();
+    updateTelemetryAndTopology();
   }
+}
+
+function parseInlineMarkdown(text) {
+  if (!text) return '';
+  let res = text;
+  // Inline code
+  res = res.replace(/`([^`]+)`/g, '<code class="md-inline-code">$1</code>');
+  // Bold
+  res = res.replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>');
+  res = res.replace(/__([^_]+)__/g, '<b>$1</b>');
+  // Italic
+  res = res.replace(/\*([^*]+)\*/g, '<i>$1</i>');
+  res = res.replace(/_([^_]+)_/g, '<i>$1</i>');
+  // Strikethrough
+  res = res.replace(/~~([^~]+)~~/g, '<del>$1</del>');
+  // Links: [text](url)
+  res = res.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer" class="md-link">$1</a>');
+  // Status checkmarks/badges styling
+  res = res.replace(/✅\s*Confirmed/gi, '<span class="status-pill status-pill-confirmed">✅ Confirmed</span>');
+  res = res.replace(/❌\s*False/gi, '<span class="status-pill status-pill-false">❌ False</span>');
+  res = res.replace(/⚠️\s*Partial/gi, '<span class="status-pill status-pill-partial">⚠️ Partial</span>');
+  return res;
 }
 
 function parseMarkdown(md) {
   if (!md) return '';
-  let html = md;
-  html = html.replace(/```([a-zA-Z0-9_]*)\n([\s\S]*?)```/g, (match, lang, code) => {
-    return `<pre><code class="language-${lang}">${escapeHtml(code)}</code></pre>`;
+  let text = String(md).replace(/\r\n/g, '\n');
+
+  const htmlBlocks = [];
+  const saveBlock = (html) => {
+    const id = htmlBlocks.length;
+    htmlBlocks.push(html);
+    return `\n\n%%%HTML_BLOCK_${id}%%%\n\n`;
+  };
+
+  // Step 1: Protect Fenced Code Blocks
+  text = text.replace(/```([a-zA-Z0-9_\-]*)\n([\s\S]*?)```/g, (match, lang, code) => {
+    const l = lang ? lang.trim() : 'text';
+    const safeCode = escapeHtml(code);
+    const html = `<div class="code-block-wrapper">
+      <div class="code-block-header">
+        <span class="code-lang-label">${escapeHtml(l)}</span>
+        <button class="code-copy-btn" onclick="navigator.clipboard.writeText(this.closest('.code-block-wrapper').querySelector('code').innerText); this.innerText='Copied!'; setTimeout(()=>this.innerText='Copy', 1500)">Copy</button>
+      </div>
+      <pre><code class="language-${escapeHtml(l)}">${safeCode}</code></pre>
+    </div>`;
+    return saveBlock(html);
   });
-  html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
-  html = html.replace(/^### (.*$)/gim, '<h3>$1</h3>');
-  html = html.replace(/^## (.*$)/gim, '<h2>$1</h2>');
-  html = html.replace(/^# (.*$)/gim, '<h1>$1</h1>');
-  html = html.replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>');
-  html = html.replace(/\*([^*]+)\*/g, '<i>$1</i>');
-  html = html.replace(/^\s*-\s+(.*$)/gim, '<li>$1</li>');
-  html = html.replace(/(<li>[\s\S]*?<\/li>)/gim, '<ul>$1</ul>');
-  html = html.replace(/\n\n/g, '<br><br>');
-  return html;
+
+  // Step 2: Handle Claude CLI / Unicode Border Boxes (╭─ ... ─╮ ... ╰─ ... ─╯ or ┌─ ... ─┐ ... └─ ... ─┘)
+  text = text.replace(/(?:^[ \t]*[╭┌]─+([^\n─]*?)─+[╮┐][ \t]*\n)([\s\S]*?)(?:^[ \t]*[╰└]─+[╯┘][ \t]*)/gm, (match, title, body) => {
+    const cleanTitle = title.trim() || 'Internal Status / Execution';
+    const lines = body.split('\n')
+      .map(l => l.replace(/^[ \t]*[│|][ \t]?/, '').replace(/[ \t]*[│|][ \t]*$/, '').trim())
+      .filter(l => l.length > 0);
+    
+    let contentHtml = '';
+    const listItems = [];
+    for (const l of lines) {
+      if (l.startsWith('• ') || l.startsWith('- ') || l.startsWith('* ')) {
+        listItems.push(`<li>${parseInlineMarkdown(escapeHtml(l.replace(/^[•\-\*]\s*/, '')))}</li>`);
+      } else {
+        if (listItems.length > 0) {
+          contentHtml += `<ul>${listItems.join('')}</ul>`;
+          listItems.length = 0;
+        }
+        contentHtml += `<div class="cli-box-line">${parseInlineMarkdown(escapeHtml(l))}</div>`;
+      }
+    }
+    if (listItems.length > 0) {
+      contentHtml += `<ul>${listItems.join('')}</ul>`;
+    }
+
+    const html = `<div class="cli-box">
+      <div class="cli-box-header">
+        <span class="cli-box-icon">⚡</span>
+        <span class="cli-box-title">${escapeHtml(cleanTitle)}</span>
+      </div>
+      <div class="cli-box-body">${contentHtml}</div>
+    </div>`;
+    return saveBlock(html);
+  });
+
+  // Step 3: Handle GitHub Callout Alerts (> [!NOTE], > [!TIP], etc.)
+  text = text.replace(/(?:^[ \t]*>[ \t]*\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\][ \t]*\n)((?:^[ \t]*>[ \t]?[^\n]*\n?)+)/gim, (match, type, content) => {
+    const cleanType = type.toUpperCase();
+    const cleanContent = content.split('\n')
+      .map(l => l.replace(/^[ \t]*>[ \t]?/, ''))
+      .join('\n').trim();
+    
+    const icons = {
+      NOTE: 'ℹ️',
+      TIP: '💡',
+      IMPORTANT: '❗',
+      WARNING: '⚠️',
+      CAUTION: '🛑'
+    };
+
+    const html = `<div class="callout callout-${cleanType.toLowerCase()}">
+      <div class="callout-title"><span class="callout-icon">${icons[cleanType] || 'ℹ️'}</span> ${cleanType}</div>
+      <div class="callout-content">${parseInlineMarkdown(escapeHtml(cleanContent))}</div>
+    </div>`;
+    return saveBlock(html);
+  });
+
+  // Step 4: Handle standard blockquotes (> ...)
+  text = text.replace(/(?:^[ \t]*>[ \t]?[^\n]+(?:\n[ \t]*>[ \t]?[^\n]+)*)/gm, (match) => {
+    const content = match.split('\n')
+      .map(l => l.replace(/^[ \t]*>[ \t]?/, ''))
+      .join('<br>');
+    const html = `<blockquote class="md-blockquote">${parseInlineMarkdown(escapeHtml(content))}</blockquote>`;
+    return saveBlock(html);
+  });
+
+  // Step 5: Normalize and Parse Markdown Tables
+  text = text.replace(/\|\s*\|\s*/g, '|\n| ');
+
+  const lines = text.split('\n');
+  const output = [];
+  let inTable = false;
+  let tableLines = [];
+  let inList = false;
+  let listType = 'ul';
+  let listItems = [];
+
+  const flushTable = () => {
+    if (tableLines.length >= 2) {
+      let headerCells = [];
+      let alignments = [];
+      let bodyRows = [];
+
+      let sepIdx = -1;
+      for (let i = 0; i < tableLines.length; i++) {
+        if (/^[\|\s:\-]+$/.test(tableLines[i]) && tableLines[i].includes('-')) {
+          sepIdx = i;
+          break;
+        }
+      }
+
+      if (sepIdx > 0) {
+        const rawHeader = tableLines.slice(0, sepIdx).join(' ');
+        headerCells = rawHeader.split('|')
+          .map(c => c.trim())
+          .filter(c => c.length > 0);
+
+        const sepRow = tableLines[sepIdx];
+        const sepCols = sepRow.split('|')
+          .map(c => c.trim())
+          .filter(c => c.length > 0);
+
+        alignments = sepCols.map(s => {
+          if (s.startsWith(':') && s.endsWith(':')) return 'center';
+          if (s.endsWith(':')) return 'right';
+          return 'left';
+        });
+
+        for (let i = sepIdx + 1; i < tableLines.length; i++) {
+          const rowStr = tableLines[i].trim();
+          if (!rowStr) continue;
+          const cells = rowStr.split('|')
+            .map(c => c.trim());
+          
+          if (rowStr.startsWith('|') && cells.length > 0 && cells[0] === '') cells.shift();
+          if (rowStr.endsWith('|') && cells.length > 0 && cells[cells.length - 1] === '') cells.pop();
+
+          if (cells.length > 0) bodyRows.push(cells);
+        }
+
+        let tableHtml = '<div class="table-container"><table class="md-table"><thead><tr>';
+        headerCells.forEach((h, idx) => {
+          const align = alignments[idx] || 'left';
+          tableHtml += `<th style="text-align:${align}">${parseInlineMarkdown(escapeHtml(h))}</th>`;
+        });
+        tableHtml += '</tr></thead><tbody>';
+
+        bodyRows.forEach(row => {
+          tableHtml += '<tr>';
+          for (let idx = 0; idx < Math.max(headerCells.length, row.length); idx++) {
+            const val = row[idx] || '';
+            const align = alignments[idx] || 'left';
+            tableHtml += `<td style="text-align:${align}">${parseInlineMarkdown(escapeHtml(val))}</td>`;
+          }
+          tableHtml += '</tr>';
+        });
+        tableHtml += '</tbody></table></div>';
+        output.push(saveBlock(tableHtml));
+      } else {
+        output.push(tableLines.map(l => parseInlineMarkdown(escapeHtml(l))).join('<br>'));
+      }
+    } else {
+      output.push(tableLines.map(l => parseInlineMarkdown(escapeHtml(l))).join('<br>'));
+    }
+    tableLines = [];
+    inTable = false;
+  };
+
+  const flushList = () => {
+    if (listItems.length > 0) {
+      const listHtml = `<${listType}>${listItems.map(item => `<li>${parseInlineMarkdown(escapeHtml(item))}</li>`).join('')}</${listType}>`;
+      output.push(saveBlock(listHtml));
+      listItems = [];
+    }
+    inList = false;
+  };
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const trimmed = line.trim();
+
+    // Check for Table Row
+    if (trimmed.startsWith('|') && trimmed.includes('|', 1)) {
+      if (inList) flushList();
+      inTable = true;
+      tableLines.push(trimmed);
+      continue;
+    } else if (inTable) {
+      flushTable();
+    }
+
+    // Check for Headings
+    if (/^#{1,6}\s+/.test(trimmed)) {
+      if (inList) flushList();
+      const level = trimmed.match(/^#+/)[0].length;
+      const text = trimmed.replace(/^#+\s*/, '');
+      output.push(`<h${level}>${parseInlineMarkdown(escapeHtml(text))}</h${level}>`);
+      continue;
+    }
+
+    // Check for Horizontal Rule
+    if (/^(?:---|\*\*\*|___)$/.test(trimmed)) {
+      if (inList) flushList();
+      output.push('<hr>');
+      continue;
+    }
+
+    // Check for Unordered List
+    if (/^[•\-\*\+]\s+/.test(trimmed)) {
+      if (inList && listType !== 'ul') flushList();
+      inList = true;
+      listType = 'ul';
+      listItems.push(trimmed.replace(/^[•\-\*\+]\s+/, ''));
+      continue;
+    }
+
+    // Check for Ordered List
+    if (/^\d+\.\s+/.test(trimmed)) {
+      if (inList && listType !== 'ol') flushList();
+      inList = true;
+      listType = 'ol';
+      listItems.push(trimmed.replace(/^\d+\.\s+/, ''));
+      continue;
+    }
+
+    // Blank line or regular text
+    if (inList) flushList();
+
+    if (!trimmed) {
+      output.push('');
+    } else if (trimmed.startsWith('%%%HTML_BLOCK_')) {
+      output.push(trimmed);
+    } else {
+      output.push(`<p>${parseInlineMarkdown(escapeHtml(trimmed))}</p>`);
+    }
+  }
+
+  if (inTable) flushTable();
+  if (inList) flushList();
+
+  let finalHtml = output.filter(chunk => chunk.length > 0).join('\n');
+
+  // Step 6: Restore all HTML blocks
+  finalHtml = finalHtml.replace(/<p>\s*%%%HTML_BLOCK_(\d+)%%%\s*<\/p>|%%%HTML_BLOCK_(\d+)%%%/g, (match, p1, p2) => {
+    const idx = parseInt(p1 || p2, 10);
+    return htmlBlocks[idx] || '';
+  });
+
+  return finalHtml;
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -427,6 +702,7 @@ async function loadLoopSessionsList() {
     const res = await fetch('/api/loop/sessions', { cache: 'no-store' });
     const list = await res.json();
     allLoopSessions = list || [];
+    await loadSessionsList();
     const sel = document.getElementById('loopSessionSelect');
     if (!sel) return;
     sel.innerHTML = '';
@@ -436,7 +712,10 @@ async function loadLoopSessionsList() {
       return;
     }
 
-    if (!activeLoopSessionId) {
+    const savedLoopSessionId = localStorage.getItem('swarm_active_loop_session');
+    if (savedLoopSessionId && allLoopSessions.some(s => (s.id || s.session_id) === savedLoopSessionId)) {
+      activeLoopSessionId = savedLoopSessionId;
+    } else if (!activeLoopSessionId) {
       activeLoopSessionId = allLoopSessions[0].id || allLoopSessions[0].session_id;
     }
 
@@ -476,6 +755,7 @@ async function onLoopSessionChanged() {
   const sel = document.getElementById('loopSessionSelect');
   if (!sel || !sel.value) return;
   activeLoopSessionId = sel.value;
+  try { localStorage.setItem('swarm_active_loop_session', activeLoopSessionId); } catch(_) {}
   try {
     const res = await fetch(`/api/loop/sessions/${encodeURIComponent(activeLoopSessionId)}/select`, { method: 'POST' });
     const data = await res.json();
@@ -2668,37 +2948,154 @@ function hideCustomContextMenu() {
 // ─────────────────────────────────────────────────────────────
 // Multi-Chat Session Logic
 // ─────────────────────────────────────────────────────────────
+let isLoopViewActive = false;
+
 async function loadSessionsList() {
   try {
-    const res = await fetch('/api/sessions', { cache: 'no-store' });
-    const list = await res.json();
+    const [loopRes, chatRes] = await Promise.all([
+      fetch('/api/loop/sessions', { cache: 'no-store' }),
+      fetch('/api/sessions', { cache: 'no-store' })
+    ]);
+    
+    allLoopSessions = await loopRes.json() || [];
+    const chatList = await chatRes.json() || [];
+    
     const container = document.getElementById('sessionListContainer');
+    if (!container) return;
     container.innerHTML = '';
 
-    if (!list || list.length === 0) {
-      await startNewChat();
-      return;
+    // 1. Autonomous Swarm Runs Section
+    if (allLoopSessions.length > 0) {
+      const loopHeader = document.createElement('div');
+      loopHeader.className = 'sidebar-section-header';
+      loopHeader.innerHTML = `<span>🚀 Swarm Runs (${allLoopSessions.length})</span>`;
+      container.appendChild(loopHeader);
+
+      const statusIcons = {
+        running: '🟢',
+        completed: '✅',
+        paused: '⏸️',
+        interrupted: '⚠️',
+        recovering: '🔄',
+        failed: '❌',
+        idle: '⏹️'
+      };
+
+      allLoopSessions.forEach(s => {
+        const sId = s.id || s.session_id;
+        const icon = statusIcons[s.status] || '🔄';
+        const title = s.title || s.name || s.goal || 'Untitled Loop Run';
+        const isSelected = (sId === activeLoopSessionId && isLoopViewActive);
+        
+        const div = document.createElement('div');
+        div.className = `session-item ${isSelected ? 'active' : ''}`;
+        div.onclick = () => selectLoopSession(sId);
+        div.title = `${title} (${s.status || 'idle'})`;
+        div.innerHTML = `
+          <span class="session-title-span">${icon} ${escapeHtml(title)}</span>
+          <span class="session-item-badge">${escapeHtml(s.status || 'idle')}</span>
+          <button class="session-del-btn" title="Delete run" onclick="event.stopPropagation(); deleteLoopSession('${sId}')">✕</button>
+        `;
+        container.appendChild(div);
+      });
     }
 
-    if (!activeSessionId) activeSessionId = list[0].id;
+    // 2. Direct Chat Conversations Section
+    const chatHeader = document.createElement('div');
+    chatHeader.className = 'sidebar-section-header';
+    chatHeader.innerHTML = `<span>💬 Chats (${chatList.length})</span>`;
+    container.appendChild(chatHeader);
 
-    list.forEach(sess => {
-      const div = document.createElement('div');
-      div.className = `session-item ${sess.id === activeSessionId ? 'active' : ''}`;
-      div.onclick = () => switchSession(sess.id);
-      div.innerHTML = `
-        <span class="session-title-span">💬 ${escapeHtml(sess.title)}</span>
-        <button class="session-del-btn" onclick="event.stopPropagation(); deleteSession('${sess.id}')">✕</button>
-      `;
-      container.appendChild(div);
-    });
+    if (chatList.length === 0) {
+      const emptyDiv = document.createElement('div');
+      emptyDiv.style.padding = '6px 10px';
+      emptyDiv.style.fontSize = '12px';
+      emptyDiv.style.color = 'var(--text-dim)';
+      emptyDiv.innerText = 'No direct chats';
+      container.appendChild(emptyDiv);
+    } else {
+      if (!activeSessionId && !isLoopViewActive) activeSessionId = chatList[0].id;
 
-    await loadActiveSessionMessages();
+      chatList.forEach(sess => {
+        const isSelected = (sess.id === activeSessionId && !isLoopViewActive);
+        const div = document.createElement('div');
+        div.className = `session-item ${isSelected ? 'active' : ''}`;
+        div.onclick = () => switchSession(sess.id);
+        div.title = sess.title || 'Chat';
+        div.innerHTML = `
+          <span class="session-title-span">💬 ${escapeHtml(sess.title)}</span>
+          <button class="session-del-btn" title="Delete chat" onclick="event.stopPropagation(); deleteSession('${sess.id}')">✕</button>
+        `;
+        container.appendChild(div);
+      });
+    }
+
+    if (!isLoopViewActive && activeSessionId) {
+      await loadActiveSessionMessages();
+    }
   } catch(e) { handleServerDisconnected(); }
+}
+
+async function selectLoopSession(id) {
+  isLoopViewActive = true;
+  activeLoopSessionId = id;
+  try { localStorage.setItem('swarm_active_loop_session', id); } catch(_) {}
+  toggleMobileChatSidebar(false);
+
+  try {
+    const res = await fetch(`/api/loop/sessions/${encodeURIComponent(id)}/select`, { method: 'POST' });
+    const data = await res.json();
+    if (data.success && data.state) {
+      renderLoopDashboard(data.state);
+      renderLiveLoopStreamInChat(data.state);
+    }
+  } catch(e) {
+    pollLoopState();
+  }
+
+  await loadSessionsList();
+  showToast("Switched to Swarm Run", "info", 1500);
+}
+
+async function startNewSwarmLoop() {
+  try {
+    const res = await fetch('/api/loop/sessions/new', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: 'New Swarm Run', goal: '', repo_path: currentRepoPath })
+    });
+    const sess = await res.json();
+    if (sess && sess.id) {
+      activeLoopSessionId = sess.id;
+      isLoopViewActive = true;
+      try { localStorage.setItem('swarm_active_loop_session', sess.id); } catch(_) {}
+      toggleMobileChatSidebar(false);
+      await loadSessionsList();
+      pollLoopState();
+      showToast("🚀 Created new Swarm Run", "success", 2000);
+      const goalInput = document.getElementById('promptInput') || document.getElementById('loopGoalInput');
+      if (goalInput) goalInput.focus();
+    }
+  } catch(e) { handleServerDisconnected(); }
+}
+
+async function deleteLoopSession(id) {
+  try {
+    await fetch('/api/loop/sessions/delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: id })
+    });
+    if (activeLoopSessionId === id) activeLoopSessionId = "";
+    showToast("Swarm Run deleted", "info");
+    await loadSessionsList();
+    pollLoopState();
+  } catch(e) { showToast("Failed to delete run: " + e.message, "error"); }
 }
 
 async function startNewChat() {
   try {
+    isLoopViewActive = false;
     const res = await fetch('/api/sessions/new', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -2712,6 +3109,7 @@ async function startNewChat() {
 }
 
 async function switchSession(id) {
+  isLoopViewActive = false;
   if (activeSessionId === id) {
     toggleMobileChatSidebar(false);
     return;
@@ -2719,16 +3117,7 @@ async function switchSession(id) {
   activeSessionId = id;
   toggleMobileChatSidebar(false);
   
-  // Instant visual feedback on sidebar
-  const items = document.querySelectorAll('.session-item');
-  items.forEach(i => {
-    if (i.innerHTML.includes(`deleteSession('${id}')`)) {
-      i.className = 'session-item active';
-    } else {
-      i.className = 'session-item';
-    }
-  });
-
+  await loadSessionsList();
   await loadActiveSessionMessages();
   showToast("Switched chat session", "info", 1500);
 }
@@ -2748,6 +3137,54 @@ async function confirmClearCurrentSession() {
   if (activeSessionId) await deleteSession(activeSessionId);
 }
 
+let isChatUserScrolledUp = false;
+
+function initChatScrollListener() {
+  const container = document.getElementById('chatContainer');
+  if (!container) return;
+  container.addEventListener('scroll', () => {
+    const threshold = 80;
+    const distanceFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
+    isChatUserScrolledUp = distanceFromBottom > threshold;
+    updateScrollToBottomButton(distanceFromBottom > 150);
+  });
+}
+
+function scrollChatToBottom(force = false) {
+  const container = document.getElementById('chatContainer');
+  if (!container) return;
+  if (force || !isChatUserScrolledUp) {
+    container.scrollTo({
+      top: container.scrollHeight,
+      behavior: force ? 'smooth' : 'auto'
+    });
+    isChatUserScrolledUp = false;
+    updateScrollToBottomButton(false);
+  }
+}
+
+function updateScrollToBottomButton(show) {
+  let btn = document.getElementById('chatScrollBottomBtn');
+  if (!btn) {
+    btn = document.createElement('button');
+    btn.id = 'chatScrollBottomBtn';
+    btn.className = 'chat-scroll-bottom-btn';
+    btn.innerHTML = '↓ Scroll to bottom';
+    btn.onclick = () => {
+      isChatUserScrolledUp = false;
+      scrollChatToBottom(true);
+    };
+    const inputSec = document.querySelector('.input-section');
+    if (inputSec) {
+      inputSec.style.position = 'relative';
+      inputSec.appendChild(btn);
+    }
+  }
+  if (btn) {
+    btn.style.display = show ? 'flex' : 'none';
+  }
+}
+
 async function loadActiveSessionMessages() {
   if (!activeSessionId) return;
   try {
@@ -2763,11 +3200,11 @@ async function loadActiveSessionMessages() {
     welcome.innerHTML = `
       <div class="msg-assistant">
         <div class="msg-header">
-          <div class="msg-author">🤖 Direct Lead Advisor (Session: ${escapeHtml(sess.title)})</div>
+          <div class="msg-author">🌌 Swarm Autonomous Agent · ${escapeHtml(sess.title)}</div>
           <span class="status-badge badge-online">Ready</span>
         </div>
         <div class="markdown-body">
-          <p>Active session loaded. All tasks dynamically allocate sub-agent slots with tailored skills.</p>
+          <p>Session active. Ready for direct conversation, code analysis, or autonomous feature loops.</p>
         </div>
       </div>
     `;
@@ -2808,21 +3245,33 @@ async function loadActiveSessionMessages() {
           `;
         }
 
+        const stepsHtml = (turn.status_steps || []).map(s => `<div>${escapeHtml(s)}</div>`).join('');
         const planHtml = turn.plan ? renderCboPlanHtml(turn.plan, msgId) : '';
+        const thoughtLabel = turn.thought_summary || (turn.tier === 'direct' ? `Direct Answer · ${turn.duration || 0.2}s` : (turn.tier === 'web_scout' ? `Web & Context7 Grounded · ${turn.duration || 1.1}s` : `Swarm Cross-Checked · ${turn.duration || 1.8}s`));
+        
+        const thoughtBlock = (turn.status_steps && turn.status_steps.length > 0) ? `
+          <details class="qwen-thought-details">
+            <summary class="qwen-thought-summary">
+              <span class="qwen-thought-icon">⚡</span>
+              <span class="qwen-thought-title">${escapeHtml(thoughtLabel)}</span>
+              <span class="qwen-thought-chevron">▾</span>
+            </summary>
+            <div class="qwen-thought-body">
+              <div class="status-timeline">${stepsHtml}</div>
+              ${planHtml}
+            </div>
+          </details>
+        ` : '';
 
         assistRow.innerHTML = `
           <div class="msg-assistant" id="${msgId}">
             <div class="msg-header">
-              <div class="msg-author">🤖 Direct Lead Advisor (Dynamic GPU Swarm)</div>
+              <div class="msg-author">🌌 Swarm Autonomous Agent</div>
               <div class="ghd-toolbar-group">
-                <button class="action-btn action-btn--accent action-btn--sm" onclick="transferAdvisorChatToLoop()" title="Transfer blueprint to Auto-Dev Loop">🚀 Transfer to Loop</button>
-                <span class="chip chip--green">✓ ${turn.duration || 1.5}s</span>
+                <span class="chip chip--green">✓ ${turn.duration || 1.2}s (LFM 2.5 VL)</span>
               </div>
             </div>
-            <div class="status-timeline">
-              ${(turn.status_steps || []).map(s => `<div>${escapeHtml(s)}</div>`).join('')}
-            </div>
-            ${planHtml}
+            ${thoughtBlock}
             <div class="markdown-body">
               ${parseMarkdown(turn.answer)}
             </div>
@@ -2834,7 +3283,7 @@ async function loadActiveSessionMessages() {
     });
 
     historyIndex = promptHistory.length;
-    container.scrollTop = container.scrollHeight;
+    scrollChatToBottom(true);
   } catch(e) { handleServerDisconnected(); }
 }
 
@@ -3167,14 +3616,28 @@ function toggleDebugDrawer() {
   }
 }
 
+let lastDebugLogsSignature = "";
+
 async function fetchLiveDebugLogs() {
   try {
-    const res = await fetch('/api/debug/logs?limit=40', { cache: 'no-store' });
+    const res = await fetch('/api/debug/logs?limit=50', { cache: 'no-store' });
     const data = await res.json();
     const list = document.getElementById('debugLogList');
+    if (!list) return;
+
+    const logs = data.logs || [];
+    const signature = logs.map(l => `${l.time_ms || l.timestamp}-${l.action}`).join('|');
+    if (signature === lastDebugLogsSignature && list.children.length > 0) {
+      return; // No new logs, do not touch DOM
+    }
+    lastDebugLogsSignature = signature;
+
+    const isAtBottom = list.children.length === 0 || (list.scrollHeight - list.scrollTop - list.clientHeight) < 45;
+    const previousScrollTop = list.scrollTop;
+
     list.innerHTML = '';
 
-    (data.logs || []).forEach(log => {
+    logs.forEach(log => {
       const div = document.createElement('div');
       const lvl = (log.level || 'INFO').toLowerCase();
       div.className = `debug-log-entry ${lvl === 'error' ? 'error' : (lvl === 'warn' ? 'warn' : '')}`;
@@ -3185,11 +3648,16 @@ async function fetchLiveDebugLogs() {
       list.appendChild(div);
     });
 
-    list.scrollTop = list.scrollHeight;
+    if (isAtBottom) {
+      list.scrollTop = list.scrollHeight;
+    } else {
+      list.scrollTop = previousScrollTop;
+    }
   } catch(e) {}
 }
 
 async function clearDebugLogs() {
+  lastDebugLogsSignature = "";
   document.getElementById('debugLogList').innerHTML = '<div style="color:var(--text-muted); padding:10px;">Logs cleared in viewer.</div>';
   showToast("Debug logs cleared in viewer", "info");
 }
@@ -3305,19 +3773,309 @@ function applyStateSnapshot(data) {
   const mVal = document.getElementById('modelVal');
   if (mVal) {
     if (data.status && data.status.lfm) {
-      mVal.innerText = 'LFM 2.5: 8 SLOTS READY';
+      mVal.innerText = 'LFM 2.5 VL: 2 SLOTS READY';
       mVal.style.color = 'var(--green)';
     } else {
-      mVal.innerText = 'LFM 2.5: HOST OFFLINE';
+      mVal.innerText = 'LFM 2.5 VL: HOST OFFLINE';
       mVal.style.color = 'var(--orange)';
     }
   }
 
   if (data.topology) renderDynamicTopology(data.topology);
-  // Only refresh the loop dashboard while its tab is visible (matches prior polling scope).
-  const loopTab = document.getElementById('tabLoop');
-  if (data.loop_state && loopTab && loopTab.classList.contains('active')) {
-    renderLoopDashboard(data.loop_state);
+  if (data.loop_state) {
+    renderUnifiedAgentLoopState(data.loop_state);
+  }
+}
+
+// ─────────────────────────────────────────────────────────────
+// UNIFIED SWARM AGENT REAL-TIME LOOP RENDERER
+// ─────────────────────────────────────────────────────────────
+function renderUnifiedAgentLoopState(state) {
+  if (!state) return;
+  const currentId = state.id || state.session_id;
+  if (currentId) activeLoopSessionId = currentId;
+
+  // 1. Update Header Status Badge
+  const badge = document.getElementById('agentLoopStatusBadge');
+  const rawStatus = (state.status || 'idle').toLowerCase();
+  if (badge) {
+    if (rawStatus === 'running') {
+      const taskCount = (state.tasks || []).length;
+      const completedCount = (state.tasks || []).filter(t => t.status === 'completed').length;
+      badge.innerHTML = `<span class="loop-spinner"></span> RUNNING (${completedCount}/${taskCount || 1} tasks · Iter ${state.iteration || 1})`;
+      badge.className = 'status-badge badge-running';
+    } else if (rawStatus === 'paused') {
+      badge.innerText = '⏸️ PAUSED';
+      badge.className = 'status-badge badge-paused';
+    } else if (rawStatus === 'interrupted' || rawStatus === 'recovering') {
+      badge.innerText = '⚠️ RECOVERABLE';
+      badge.className = 'status-badge badge-interrupted';
+    } else if (rawStatus === 'completed') {
+      badge.innerText = '✅ GOAL COMPLETED';
+      badge.className = 'status-badge badge-online';
+    } else if (rawStatus === 'failed') {
+      badge.innerText = '❌ LOOP STOPPED';
+      badge.className = 'status-badge badge-offline';
+    } else {
+      badge.innerText = 'IDLE / READY';
+      badge.className = 'status-badge badge-idle';
+    }
+  }
+
+  // 2. Update Action Buttons in Agent Control Bar
+  const startBtn = document.getElementById('agentStartBtn');
+  const resumeBtn = document.getElementById('agentResumeBtn');
+  const pauseBtn = document.getElementById('agentPauseBtn');
+  const stopBtn = document.getElementById('agentStopBtn');
+
+  if (startBtn && pauseBtn && stopBtn) {
+    if (rawStatus === 'running') {
+      startBtn.style.display = 'none';
+      if (resumeBtn) resumeBtn.style.display = 'none';
+      pauseBtn.style.display = 'inline-flex';
+      stopBtn.style.display = 'inline-flex';
+    } else if (rawStatus === 'paused' || rawStatus === 'interrupted') {
+      startBtn.style.display = 'none';
+      pauseBtn.style.display = 'none';
+      if (resumeBtn) resumeBtn.style.display = 'inline-flex';
+      stopBtn.style.display = 'inline-flex';
+    } else {
+      startBtn.style.display = 'inline-flex';
+      if (resumeBtn) resumeBtn.style.display = 'none';
+      pauseBtn.style.display = 'none';
+      stopBtn.style.display = 'none';
+    }
+  }
+
+  // 3. Update Progress Strip & Phase Pills
+  const strip = document.getElementById('agentProgressStrip');
+  const goalEl = document.getElementById('agentProgressGoal');
+  const iterEl = document.getElementById('agentProgressIter');
+  const taskPill = document.getElementById('agentActiveTaskPill');
+
+  if (rawStatus === 'running' || rawStatus === 'paused') {
+    if (strip) strip.style.display = 'flex';
+    if (goalEl && state.goal) goalEl.innerText = state.goal;
+    if (iterEl) iterEl.innerText = `Iter ${state.iteration || 1}/${state.max_iterations || 20}`;
+
+    if (taskPill) {
+      taskPill.style.display = 'inline-flex';
+      taskPill.innerText = state.active_subagent ? `⚡ ${state.active_subagent}` : (state.current_task_id ? `⚡ Task: ${state.current_task_id}` : '⚡ Continuous Batching Slot');
+    }
+
+    const sub = (state.active_subagent || '').toLowerCase();
+    const phasePlan = document.getElementById('phasePlan');
+    const phaseDev = document.getElementById('phaseDev');
+    const phaseQA = document.getElementById('phaseQA');
+
+    [phasePlan, phaseDev, phaseQA].forEach(p => { if (p) p.className = 'phase-pill'; });
+
+    if (sub.includes('architect') || sub.includes('research') || sub.includes('scout') || sub.includes('plan') || sub.includes('cbo') || sub.includes('pm') || sub.includes('preflight') || sub.includes('decompose')) {
+      if (phasePlan) phasePlan.className = 'phase-pill active';
+    } else if (sub.includes('draft') || sub.includes('dev') || sub.includes('pi')) {
+      if (phaseDev) phaseDev.className = 'phase-pill active';
+    } else if (sub.includes('qa') || sub.includes('test') || sub.includes('verifier') || sub.includes('judge') || sub.includes('sec') || sub.includes('security')) {
+      if (phaseQA) phaseQA.className = 'phase-pill active';
+    } else {
+      if (phaseDev) phaseDev.className = 'phase-pill active';
+    }
+  } else {
+    if (strip) strip.style.display = 'none';
+    if (taskPill) taskPill.style.display = 'none';
+  }
+
+  // 4. Stream real-time events directly into active chat feed
+  if (rawStatus === 'running' || rawStatus === 'paused' || rawStatus === 'completed') {
+    renderLiveLoopStreamInChat(state);
+  }
+}
+
+function renderLiveLoopStreamInChat(state) {
+  const container = document.getElementById('chatContainer');
+  if (!container) return;
+
+  const currentLoopId = state.id || state.session_id || 'active';
+  let card = document.getElementById(`loop-card-${currentLoopId}`);
+
+  if (!card) {
+    const logs = state.live_logs || [];
+    if (logs.length === 0 && !state.goal) return;
+
+    const assistRow = document.createElement('div');
+    assistRow.className = 'msg-row';
+    assistRow.id = `loop-row-${currentLoopId}`;
+    assistRow.innerHTML = `
+      <div class="msg-assistant" id="loop-card-${currentLoopId}">
+        <div class="msg-header">
+          <div class="msg-author">🌌 Swarm Autonomous Agent · Active Loop</div>
+          <span class="status-badge badge-running" id="loop-card-badge-${currentLoopId}"><span class="loop-spinner"></span> Looping...</span>
+        </div>
+        <div class="status-timeline" id="loop-timeline-${currentLoopId}"></div>
+        <div id="loop-tasks-${currentLoopId}" style="display:flex; flex-direction:column; gap:6px; margin-bottom:10px;"></div>
+        <div class="markdown-body" id="loop-body-${currentLoopId}"></div>
+        <div id="loop-escalation-${currentLoopId}"></div>
+      </div>
+    `;
+    container.appendChild(assistRow);
+    card = document.getElementById(`loop-card-${currentLoopId}`);
+  }
+
+  const cardBadge = document.getElementById(`loop-card-badge-${currentLoopId}`);
+  if (cardBadge) {
+    if (state.status === 'running') {
+      cardBadge.innerHTML = `<span class="loop-spinner"></span> Running (Iter ${state.iteration || 1})`;
+      cardBadge.className = 'status-badge badge-running';
+    } else if (state.status === 'completed') {
+      cardBadge.innerText = `✓ Completed in ${state.iteration || 1} iterations`;
+      cardBadge.className = 'status-badge badge-online';
+    } else if (state.status === 'paused') {
+      cardBadge.innerText = '⏸️ Paused';
+      cardBadge.className = 'status-badge badge-paused';
+    }
+  }
+
+  const timeline = document.getElementById(`loop-timeline-${currentLoopId}`);
+  if (timeline && state.live_logs) {
+    const recentLogs = state.live_logs.slice(-8);
+    timeline.innerHTML = recentLogs.map(l => {
+      const cls = l.is_active ? 'step-active' : '';
+      return `<div class="${cls}">[${escapeHtml(l.timestamp)}] ${escapeHtml(l.message)}</div>`;
+    }).join('');
+  }
+
+  const tasksContainer = document.getElementById(`loop-tasks-${currentLoopId}`);
+  if (tasksContainer && state.tasks && state.tasks.length > 0) {
+    tasksContainer.innerHTML = state.tasks.map(t => {
+      const st = t.status || 'pending';
+      const icon = st === 'completed' ? '✓' : (st === 'running' ? '⚡' : (st === 'failed' ? '✗' : '○'));
+      const badgeCls = st === 'completed' ? 'status-a' : (st === 'running' ? 'status-m' : (st === 'failed' ? 'status-d' : 'status-u'));
+      return `
+        <div class="task-event-card">
+          <div class="task-event-card__head">
+            <span class="task-event-card__title">${icon} ${escapeHtml(t.title || t.name)}</span>
+            <span class="file-status-badge ${badgeCls}">${escapeHtml(st.toUpperCase())}</span>
+          </div>
+          ${t.subagent ? `<div style="font-size:11px; color:var(--text-muted);">Assigned: ${escapeHtml(t.subagent)}</div>` : ''}
+          ${t.files_written && t.files_written.length ? `<div style="font-size:11px; color:var(--green);">📝 Files modified: ${escapeHtml(t.files_written.join(', '))}</div>` : ''}
+        </div>
+      `;
+    }).join('');
+  }
+
+  const escContainer = document.getElementById(`loop-escalation-${currentLoopId}`);
+  if (escContainer) {
+    const pendingQuestions = (state.pending_user_questions || []).filter(q => !q.answered);
+    if (pendingQuestions.length > 0) {
+      escContainer.innerHTML = pendingQuestions.map(q => {
+        const optionsHtml = (q.options && q.options.length > 0) ? `
+          <div class="operator-options-group">
+            <div class="operator-options-label">Recommended Options (Click to select):</div>
+            <div class="operator-options-chips">
+              ${q.options.map((opt, idx) => `
+                <button type="button" class="operator-option-chip ${idx === 0 ? 'operator-option-chip--recommended' : ''}" 
+                  onclick="selectOperatorOption('${escapeHtml(q.task_id)}', '${escapeHtml(opt.value).replace(/'/g, "\\'")}')"
+                  title="Click to select this recommendation">
+                  ${escapeHtml(opt.label)}
+                </button>
+              `).join('')}
+            </div>
+          </div>
+        ` : '';
+
+        return `
+          <div class="operator-prompt-box">
+            <div class="operator-prompt-title">❓ Agent Request for Guidance (${escapeHtml(q.subagent || 'Lead Advisor')})</div>
+            <div style="font-size:13px; color:var(--text-bright); margin-bottom: 8px;">${escapeHtml(q.question)}</div>
+            ${optionsHtml}
+            <div class="operator-prompt-input-row" style="margin-top: 8px;">
+              <input type="text" class="operator-prompt-input" id="input-esc-${q.task_id}" placeholder="Type your guidance or click a recommended option above..." onkeydown="if(event.key==='Enter') submitOperatorAnswer('${q.task_id}')">
+              <button class="action-btn action-btn--accent" onclick="submitOperatorAnswer('${q.task_id}')">Send Guidance</button>
+            </div>
+          </div>
+        `;
+      }).join('');
+    } else {
+      escContainer.innerHTML = '';
+    }
+  }
+
+  const bodyEl = document.getElementById(`loop-body-${currentLoopId}`);
+  if (bodyEl && state.final_summary) {
+    bodyEl.innerHTML = parseMarkdown(state.final_summary);
+  }
+
+  scrollChatToBottom(false);
+}
+
+function selectOperatorOption(taskId, value) {
+  const input = document.getElementById(`input-esc-${taskId}`);
+  if (input) {
+    input.value = value;
+    input.focus();
+  }
+}
+
+async function submitOperatorAnswer(taskId) {
+  const input = document.getElementById(`input-esc-${taskId}`);
+  const answer = input ? input.value.trim() : '';
+  if (!answer) {
+    showToast("Please enter your guidance instructions first.", "warn");
+    return;
+  }
+
+  try {
+    const res = await fetch('/api/loop/answer', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ task_id: taskId, answer: answer })
+    });
+    const data = await res.json();
+    if (data.success) {
+      showToast("✓ Guidance submitted — autonomous agent loop resumed!", "success", 2500);
+      if (input) {
+        input.value = '';
+        input.disabled = true;
+      }
+      if (typeof fetchCurrentLoopStatus === 'function') {
+        fetchCurrentLoopStatus();
+      }
+      if (typeof fetchLiveDebugLogs === 'function') {
+        fetchLiveDebugLogs();
+      }
+    } else {
+      showToast(`Guidance submission failed: ${data.error || 'Unknown error'}`, "danger", 3500);
+    }
+  } catch (err) {
+    showToast(`Error submitting guidance: ${err.message}`, "danger");
+  }
+}
+
+function startAutonomousLoopFromInput() {
+  const promptInput = document.getElementById('promptInput');
+  let prompt = promptInput ? promptInput.value.trim() : '';
+  if (!prompt) {
+    prompt = "Implement feature with clean architecture, QA tests, and full verification.";
+    if (promptInput) promptInput.value = prompt;
+  }
+  submitMessage();
+}
+
+function sendQuickActionPrompt(action) {
+  const promptInput = document.getElementById('promptInput');
+  let text = "";
+  if (action === 'implement') {
+    text = "Implement new feature with clean architecture (≤35 lines per function, single-responsibility domain classes, dependency injection), QA unit tests, and security review.";
+  } else if (action === 'test') {
+    text = "Run the full project test suite, locate any failing tests or regression bugs, and draft surgical fixes with real verification.";
+  } else if (action === 'audit') {
+    text = "Run a comprehensive security, performance, and clean architecture audit on this repository and produce an authoritative blueprint.";
+  } else if (action === 'scout') {
+    text = "Scan the repository files, locate all entrypoints, project manifests, routes, and data models.";
+  }
+  if (promptInput) {
+    promptInput.value = text;
+    autoResize(promptInput);
+    submitMessage();
   }
 }
 
@@ -3409,10 +4167,10 @@ function renderDynamicTopology(topo) {
   const activePillVal = document.getElementById('activeAgentsVal');
   if (activePillVal) {
     if (runningCount > 0) {
-      activePillVal.innerText = `⚡ ${runningCount} / 8 Active`;
+      activePillVal.innerText = `Status: Active`;
       activePillVal.style.color = 'var(--green)';
     } else {
-      activePillVal.innerText = `0 / 8 Active`;
+      activePillVal.innerText = `Status: Ready`;
       activePillVal.style.color = 'var(--accent)';
     }
   }
@@ -3463,13 +4221,20 @@ function setPollingSpeed(fast) { /* handled by the SSE stream */ }
 window.addEventListener('DOMContentLoaded', async () => {
   initSplitResizers();
   initCustomContextMenu();
+  initChatScrollListener();
   await loadRepos();
   await loadSessionsList();
   await loadLoopSessionsList();
+  await pollLoopState();
   await loadModelCatalogAndAssignments();
   await loadSkillsCatalog();
   await loadBackendsStatus();
   initEventStream();
+
+  try {
+    const savedTab = localStorage.getItem('swarm_active_tab');
+    if (savedTab) switchTab(savedTab);
+  } catch(_) {}
 });
 
 window.addEventListener('resize', () => {
@@ -3518,6 +4283,28 @@ if (promptEl) {
   });
 }
 
+let currentChatMode = 'chat';
+
+function setChatMode(mode) {
+  currentChatMode = mode;
+  ['chat', 'apply', 'loop'].forEach(m => {
+    const btn = document.getElementById(`mode${m.charAt(0).toUpperCase() + m.slice(1)}Btn`);
+    if (btn) {
+      if (m === mode) {
+        btn.classList.add('active');
+      } else {
+        btn.classList.remove('active');
+      }
+    }
+  });
+  const map = {
+    chat: "💬 Chat: Conversational coding help",
+    apply: "🛠️ Apply: Apply code changes directly",
+    loop: "🔁 Auto-Dev: Full autonomous loop"
+  };
+  showToast(map[mode] || mode, "info", 1800);
+}
+
 function autoResize(el) {
   el.style.height = 'auto';
   el.style.height = Math.min(el.scrollHeight, 160) + 'px';
@@ -3562,19 +4349,19 @@ async function submitMessage() {
   assistRow.innerHTML = `
     <div class="msg-assistant" id="${msgId}">
       <div class="msg-header">
-        <div class="msg-author">🤖 Direct Lead Advisor (Task-Aware GPU Swarm Active)</div>
-        <span style="font-size:12px; color:var(--accent); font-weight:700;"><span class="spinner"></span> Planning Swarm...</span>
+        <div class="msg-author">🤖 Direct Lead Advisor (Liquid LFM 2.5)</div>
+        <span style="font-size:12px; color:var(--accent); font-weight:700;"><span class="spinner"></span> Thinking...</span>
       </div>
       <div class="status-timeline" id="status-${msgId}">
-        <div class="step-active">➔ Decomposing task & determining dynamic sub-agent slot allocation...</div>
+        <div class="step-active">➔ Decomposing intent & routing execution mode...</div>
       </div>
       <div class="markdown-body" id="body-${msgId}">
-        <span style="color:var(--text-muted);">Analyzing intent and allocating GPU continuous batching slots...</span>
+        <span style="color:var(--text-muted);">Generating response...</span>
       </div>
     </div>
   `;
   container.appendChild(assistRow);
-  container.scrollTop = container.scrollHeight;
+  scrollChatToBottom(true);
 
   const btn = document.getElementById('sendBtn');
   btn.disabled = true;
@@ -3582,58 +4369,113 @@ async function submitMessage() {
   setPollingSpeed(true);
 
   try {
-    const res = await fetch('/api/chat', {
+    let url = '/api/chat';
+    let payloadMode = currentChatMode;
+    
+    if (currentChatMode === 'apply') {
+      url = '/api/chat/apply';
+    } else if (currentChatMode === 'chat') {
+      payloadMode = 'auto';
+    }
+
+    const res = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message: prompt, repo_path: currentRepoPath, session_id: activeSessionId })
+      body: JSON.stringify({ message: prompt, repo_path: currentRepoPath, session_id: activeSessionId, mode: payloadMode })
     });
     const data = await res.json();
 
-    const statusEl = document.getElementById(`status-${msgId}`);
-    statusEl.innerHTML = (data.status_steps || []).map(s => `<div>${escapeHtml(s)}</div>`).join('');
-
-    if (data.plan) {
-      const planDiv = document.createElement('div');
-      planDiv.innerHTML = renderCboPlanHtml(data.plan, msgId);
-      statusEl.parentNode.insertBefore(planDiv, document.getElementById(`body-${msgId}`));
-    }
-
-    const bodyEl = document.getElementById(`body-${msgId}`);
-    bodyEl.innerHTML = parseMarkdown(data.answer || "No response received.");
-
-    if (data.artifact) {
-      const art = data.artifact;
-      const artDiv = document.createElement('div');
-      artDiv.className = 'artifact-card';
-      artDiv.innerHTML = `
-        <div class="artifact-header">
-          <span>📄 ARTIFACT: ${escapeHtml(art.title)} (${escapeHtml(art.filename)})</span>
-          <div class="artifact-actions">
-            <button class="action-btn" onclick="openRemoteArtifact('${escapeJs(art.path || '')}', '${escapeJs(art.filename)}')">👁️ Read Live</button>
-            <button class="action-btn" onclick="downloadBlob('${escapeJs(art.content)}', '${escapeJs(art.filename)}')">⬇️ Download</button>
-            <button class="action-btn" onclick="copyArtifact('${escapeJs(art.content)}')">📋 Copy</button>
+    if (data.type === 'loop_started') {
+      const loopId = data.loop_id || `loop_${Date.now()}`;
+      activeLoopSessionId = loopId;
+      const card = document.getElementById(msgId);
+      if (card) {
+        card.id = `loop-card-${loopId}`;
+        card.innerHTML = `
+          <div class="msg-header">
+            <div class="msg-author">🌌 Swarm Autonomous Agent · Active Execution</div>
+            <span class="status-badge badge-running" id="loop-card-badge-${loopId}"><span class="loop-spinner"></span> Running...</span>
           </div>
-        </div>
-        <div class="artifact-content markdown-body">
-          ${parseMarkdown(art.content)}
-        </div>
-      `;
-      document.getElementById(msgId).appendChild(artDiv);
-    }
+          <div class="status-timeline" id="loop-timeline-${loopId}">
+            ${(data.status_steps || []).map(s => `<div class="step-active">${escapeHtml(s)}</div>`).join('')}
+          </div>
+          <div id="loop-tasks-${loopId}" style="display:flex; flex-direction:column; gap:6px; margin-bottom:10px;"></div>
+          <div class="markdown-body" id="loop-body-${loopId}">
+            <p>🚀 <b>Autonomous Loop Initiated</b> for: <i>${escapeHtml(prompt)}</i></p>
+          </div>
+          <div id="loop-escalation-${loopId}"></div>
+        `;
+      }
+      showToast("🚀 Autonomous Swarm Loop started!", "success", 2000);
+      updateTelemetryAndTopology();
+    } else {
+      const statusEl = document.getElementById(`status-${msgId}`);
+      if (statusEl) {
+        const stepsHtml = (data.status_steps || []).map(s => `<div>${escapeHtml(s)}</div>`).join('');
+        const planHtml = data.plan ? renderCboPlanHtml(data.plan, msgId) : '';
+        const thoughtLabel = data.thought_summary || (data.tier === 'direct' ? `Direct Answer · ${data.duration || 0.2}s` : (data.tier === 'web_scout' ? `Web & Context7 Grounded · ${data.duration || 1.1}s` : `Swarm Cross-Checked · ${data.duration || 1.8}s`));
+        
+        statusEl.className = 'qwen-thought-details-wrapper';
+        statusEl.innerHTML = `
+          <details class="qwen-thought-details">
+            <summary class="qwen-thought-summary">
+              <span class="qwen-thought-icon">⚡</span>
+              <span class="qwen-thought-title">${escapeHtml(thoughtLabel)}</span>
+              <span class="qwen-thought-chevron">▾</span>
+            </summary>
+            <div class="qwen-thought-body">
+              <div class="status-timeline">${stepsHtml}</div>
+              ${planHtml}
+            </div>
+          </details>
+        `;
+      }
 
-    const headSpan = document.getElementById(msgId).querySelector('.msg-header span');
-    headSpan.innerText = `✓ ${data.duration}s (Dynamic Swarm)`;
-    headSpan.style.color = 'var(--green)';
+      const bodyEl = document.getElementById(`body-${msgId}`);
+      if (bodyEl) {
+        bodyEl.innerHTML = parseMarkdown(data.answer || "No response received.");
+      }
+
+      if (data.artifact) {
+        const art = data.artifact;
+        const artDiv = document.createElement('div');
+        artDiv.className = 'artifact-card';
+        artDiv.innerHTML = `
+          <div class="artifact-header">
+            <span>📄 ARTIFACT: ${escapeHtml(art.title)} (${escapeHtml(art.filename)})</span>
+            <div class="artifact-actions">
+              <button class="action-btn" onclick="openRemoteArtifact('${escapeJs(art.path || '')}', '${escapeJs(art.filename)}')">👁️ Read Live</button>
+              <button class="action-btn" onclick="downloadBlob('${escapeJs(art.content)}', '${escapeJs(art.filename)}')">⬇️ Download</button>
+              <button class="action-btn" onclick="copyArtifact('${escapeJs(art.content)}')">📋 Copy</button>
+            </div>
+          </div>
+          <div class="artifact-content markdown-body">
+            ${parseMarkdown(art.content)}
+          </div>
+        `;
+        const cardEl = document.getElementById(msgId);
+        if (cardEl) cardEl.appendChild(artDiv);
+      }
+
+      const headSpan = document.querySelector(`#${msgId} .msg-header span`);
+      if (headSpan) {
+        headSpan.innerText = `✓ ${data.duration || 1.2}s (Liquid LFM 2.5 VL)`;
+        headSpan.style.color = 'var(--green)';
+      }
+    }
 
     await loadSessionsList();
 
   } catch (err) {
-    document.getElementById(`body-${msgId}`).innerHTML = `<span style="color:var(--rose); font-weight:700;">Error: ${escapeHtml(err.message || err)}</span>`;
+    const bodyEl = document.getElementById(`body-${msgId}`);
+    if (bodyEl) {
+      bodyEl.innerHTML = `<span style="color:var(--rose); font-weight:700;">Error: ${escapeHtml(err.message || err)}</span>`;
+    }
   } finally {
     btn.disabled = false;
     setPollingSpeed(false);
     updateTelemetryAndTopology();
-    container.scrollTop = container.scrollHeight;
+    scrollChatToBottom(false);
   }
 }
 

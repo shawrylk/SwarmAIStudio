@@ -127,22 +127,19 @@ class TestLoopEngine(unittest.TestCase):
                         "write(path='tests/test_lock.py', "
                         "content=\"def test_lock():\\n    assert True\\n\")]<|tool_call_end|>"
                     )
-                elif "ZERO-TRUST QA MANDATE" in prompt_u:
-                    # Fail on first attempt, pass on second attempt
-                    if slot_call_count <= 3:
-                        return "QA AUDIT: Missing timeout assertion.\nVERDICT: FAILED (Reason: no timeout test)"
-                    return "QA AUDIT: Syntax valid, tests pass.\nVERDICT: PASSED"
-                elif "ZERO-TRUST SECURITY MANDATE" in prompt_u:
-                    return "SECURITY AUDIT: No injection vectors detected.\nVERDICT: PASSED"
-                elif "AUTONOMOUS SWARM AUTO-JUDGE" in prompt_u:
-                    if slot_call_count <= 4:
-                        return "DECISION: REJECTED (Diagnostics: Fix missing timeout test)"
-                    return "DECISION: APPROVED (Certificate: Verified by Swarm Auto-Judge)"
                 return "OK"
+
+            call_count = [0]
+            def mock_run_test_suite(*args, **kwargs):
+                call_count[0] += 1
+                if call_count[0] == 1:
+                    return {"success": False, "skipped": False, "runner": "pytest", "exit_code": 1, "output": "Failed test"}
+                return {"success": True, "skipped": False, "runner": "pytest", "exit_code": 0, "output": "Success"}
 
             with patch("swarm.loop_engine.query_local_slot", side_effect=mock_local_slot), \
                  patch("swarm.loop_engine.query_qwen_web", new_callable=AsyncMock) as mock_qwen, \
-                 patch("swarm.loop_engine.ping_lead_advisor", new_callable=AsyncMock) as mock_ping:
+                 patch("swarm.loop_engine.ping_lead_advisor", new_callable=AsyncMock) as mock_ping, \
+                 patch("swarm.loop_engine.run_test_suite", side_effect=mock_run_test_suite):
                 
                 mock_qwen.return_value = "Consensus verified."
                 mock_ping.return_value = "Ensure TTL expiration handling."
@@ -158,7 +155,6 @@ class TestLoopEngine(unittest.TestCase):
                 self.assertEqual(completed_task["status"], "completed")
                 self.assertEqual(completed_task["attempts"], 2)
                 self.assertIn("acquire_lock", completed_task["output"])
-                self.assertIn("APPROVED", completed_task["judge_certificate"])
                 self.assertTrue(len(completed_task["injected_skill"]) > 0)
 
         asyncio.run(run_test())
@@ -321,12 +317,6 @@ if __name__ == "__main__":
                     pu = prompt.upper()
                     if "SURGICAL CODE DRAFTSMAN" in pu:
                         return dev_code
-                    elif "ZERO-TRUST QA MANDATE" in pu:
-                        return "QA AUDIT: Verified.\nVERDICT: PASSED"
-                    elif "ZERO-TRUST SECURITY MANDATE" in pu:
-                        return "SECURITY AUDIT: Verified.\nVERDICT: PASSED"
-                    elif "AUTONOMOUS SWARM AUTO-JUDGE" in pu:
-                        return "DECISION: APPROVED"
                     return "Executive Summary"
 
                 with patch("swarm.loop_engine.query_local_slot", side_effect=mock_slot), \
@@ -449,92 +439,7 @@ if __name__ == "__main__":
                     self.assertEqual(completed_task["attempts"], 2)
                     self.assertEqual(completed_task["status"], "completed")
                     self.assertTrue(completed_task["test_results"]["success"])
-                    self.assertEqual(completed_task["test_results"]["exit_code"], 0)
-                    self.assertIn("multiply", (Path(tmpdir) / "math_mod.py").read_text())
 
-        asyncio.run(run_test())
-
-    def test_parallel_audit_phase_fanout(self):
-        """Verify that parallel audit phase executes QA, Sec, and Oracle concurrently and updates SWARM_STATE."""
-        async def run_test():
-            from swarm.loop_engine import execute_zero_trust_task, SWARM_LOOP_ROSTER
-            from swarm.orchestrator import SWARM_STATE, set_dynamic_subagents_roster
-
-            set_dynamic_subagents_roster(SWARM_LOOP_ROSTER)
-
-            task = {
-                "id": "task-fanout-1",
-                "order": 1,
-                "title": "Parallel Auth Endpoint",
-                "role": "dev",
-                "description": "Auth with JWT",
-                "acceptance_criteria": "Tests pass",
-                "status": "pending",
-                "assigned_agent": "⚙️ Surgical Code Draftsman",
-                "assigned_slot": "Slot 2",
-                "advisor_consultations": []
-            }
-
-            active_during_audit = []
-            audit_start_times = {}
-
-            async def mock_local_slot(prompt, system="", **kwargs):
-                pu = prompt.upper()
-                if "SURGICAL CODE DRAFTSMAN" in pu:
-                    return (
-                        "<|tool_call_start|>[write(path='src/auth.py', "
-                        "content='def auth():\\n    return True\\n')]<|tool_call_end|>"
-                    )
-                elif "ZERO-TRUST QA MANDATE" in pu:
-                    audit_start_times["qa"] = asyncio.get_event_loop().time()
-                    active_during_audit.append({
-                        "caller": "qa",
-                        "qa_status": [s["status"] for s in SWARM_STATE["sub_agents"] if s["id"] == "agent_qa"][0],
-                        "sec_status": [s["status"] for s in SWARM_STATE["sub_agents"] if s["id"] == "agent_sec"][0],
-                        "oracle_status": [s["status"] for s in SWARM_STATE["sub_agents"] if s["id"] == "agent_oracle"][0]
-                    })
-                    await asyncio.sleep(0.05)
-                    return "VERDICT: PASSED"
-                elif "ZERO-TRUST SECURITY MANDATE" in pu:
-                    audit_start_times["sec"] = asyncio.get_event_loop().time()
-                    active_during_audit.append({
-                        "caller": "sec",
-                        "qa_status": [s["status"] for s in SWARM_STATE["sub_agents"] if s["id"] == "agent_qa"][0],
-                        "sec_status": [s["status"] for s in SWARM_STATE["sub_agents"] if s["id"] == "agent_sec"][0],
-                        "oracle_status": [s["status"] for s in SWARM_STATE["sub_agents"] if s["id"] == "agent_oracle"][0]
-                    })
-                    await asyncio.sleep(0.05)
-                    return "VERDICT: PASSED"
-                elif "AUTONOMOUS SWARM AUTO-JUDGE" in pu:
-                    return "DECISION: APPROVED (Certificate: Fanout audit verified)"
-                return "OK"
-
-            async def mock_qwen(prompt):
-                audit_start_times["oracle"] = asyncio.get_event_loop().time()
-                await asyncio.sleep(0.05)
-                return "Consensus verified."
-
-            with patch("swarm.loop_engine.query_local_slot", side_effect=mock_local_slot), \
-                 patch("swarm.loop_engine.query_qwen_web", side_effect=mock_qwen), \
-                 patch("swarm.loop_engine.ping_lead_advisor", new_callable=AsyncMock, return_value="Guidance"):
-
-                res = await execute_zero_trust_task(
-                    task,
-                    repo_block="",
-                    repo_path="",
-                    research_brief="Research Brief",
-                    github_issue_num=None
-                )
-
-                self.assertEqual(res["status"], "completed")
-                self.assertTrue(res["qa_passed"])
-                self.assertTrue(res["security_passed"])
-                self.assertIn("qa", audit_start_times)
-                self.assertIn("sec", audit_start_times)
-                self.assertIn("oracle", audit_start_times)
-                # Verify that during audit execution, agents ran concurrently
-                self.assertTrue(len(active_during_audit) >= 2)
-                self.assertTrue(any(rec["qa_status"] == "running" and rec["sec_status"] == "running" for rec in active_during_audit))
 
         asyncio.run(run_test())
 

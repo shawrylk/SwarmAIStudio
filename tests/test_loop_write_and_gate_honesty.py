@@ -146,8 +146,7 @@ class TestFailureClassification(unittest.TestCase):
         fb = _build_dev_feedback(
             {"failure_kind": "infra", "infra_reason": "pytest is not installed on the host.",
              "output": "ModuleNotFoundError: No module named 'pytest'"},
-            qa_output="VERDICT: FAILED", sec_output="VERDICT: FAILED",
-            judge_output="DECISION: REJECTED", infra_broken=True, wrote_files=True,
+            infra_broken=True, wrote_files=True,
         )
         self.assertNotIn("ModuleNotFoundError", fb)
         self.assertIn("NOT YOUR JOB", fb)
@@ -155,8 +154,7 @@ class TestFailureClassification(unittest.TestCase):
     def test_code_trace_is_forwarded_to_dev(self):
         fb = _build_dev_feedback(
             {"failure_kind": "code", "output": "AssertionError: 3 != 4"},
-            qa_output="VERDICT: FAILED", sec_output="VERDICT: PASSED",
-            judge_output="DECISION: REJECTED", infra_broken=False, wrote_files=True,
+            infra_broken=False, wrote_files=True,
         )
         self.assertIn("AssertionError", fb)
 
@@ -219,18 +217,13 @@ class TestGateBlocksFabricatedApproval(unittest.TestCase):
             pu = prompt.upper()
             if "SURGICAL CODE DRAFTSMAN" in pu:
                 return "<|tool_call_start|>[write(path='src/a.py', content='x = 1\\n')]<|tool_call_end|>"
-            if "ZERO-TRUST QA MANDATE" in pu:
-                return "VERDICT: FAILED (Reason: missing coverage)"
-            if "ZERO-TRUST SECURITY MANDATE" in pu:
-                return "VERDICT: PASSED"
-            if "AUTONOMOUS SWARM AUTO-JUDGE" in pu:
-                return "DECISION: REJECTED (Diagnostics: fix coverage)"
             return "OK"
 
         async def run():
             with patch("swarm.loop_engine.query_local_slot", side_effect=mock_slot), \
                  patch("swarm.loop_engine.query_qwen_web", new_callable=AsyncMock, return_value="ok"), \
                  patch("swarm.loop_engine.ping_lead_advisor", new_callable=AsyncMock, return_value="g"), \
+                 patch("swarm.loop_engine.run_test_suite", return_value={"success": False, "skipped": False, "runner": "pytest", "exit_code": 1, "output": "Failed"}), \
                  patch("swarm.loop_engine.commit_changes") as mock_commit:
                 out = await execute_zero_trust_task(
                     task, repo_block="", repo_path="", research_brief="", github_issue_num=None
@@ -258,18 +251,13 @@ class TestGateBlocksFabricatedApproval(unittest.TestCase):
             pu = prompt.upper()
             if "SURGICAL CODE DRAFTSMAN" in pu or "ZERO FILES WRITTEN" in prompt.upper():
                 return "<|tool_call_start|>[read_file(path='/repo/x.cs')]<|tool_call_end|>"
-            if "ZERO-TRUST QA MANDATE" in pu:
-                return "VERDICT: PASSED"
-            if "ZERO-TRUST SECURITY MANDATE" in pu:
-                return "VERDICT: PASSED"
-            if "AUTONOMOUS SWARM AUTO-JUDGE" in pu:
-                return "DECISION: APPROVED (Certificate: looks fine)"
             return "OK"
 
         async def run():
             with patch("swarm.loop_engine.query_local_slot", side_effect=mock_slot), \
                  patch("swarm.loop_engine.query_qwen_web", new_callable=AsyncMock, return_value="ok"), \
                  patch("swarm.loop_engine.ping_lead_advisor", new_callable=AsyncMock, return_value="g"), \
+                 patch("swarm.loop_engine.run_test_suite", return_value={"success": True, "skipped": False, "runner": "pytest", "exit_code": 0}), \
                  patch("swarm.loop_engine.commit_changes") as mock_commit:
                 out = await execute_zero_trust_task(
                     task, repo_block="", repo_path="", research_brief="", github_issue_num=None
@@ -277,13 +265,10 @@ class TestGateBlocksFabricatedApproval(unittest.TestCase):
                 return out, mock_commit
 
         result, mock_commit = asyncio.run(run())
-        # A task that fails its gate is never "completed": it escalates to a tier
-        # that differs in kind ("pending" for another pass) or parks for the
-        # operator ("blocked"). What must never happen is a fabricated approval.
         self.assertIn(result["status"], ("pending", "blocked"))
         self.assertNotEqual(result["status"], "completed")
         self.assertEqual(result["files_written"], [])
-        self.assertIn("dev wrote no files", result.get("failure_reasons", []))
+        self.assertIn("No files were written or modified.", result.get("failure_reasons", []))
         mock_commit.assert_not_called()
 
 

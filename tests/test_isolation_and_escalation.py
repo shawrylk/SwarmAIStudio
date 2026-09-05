@@ -249,12 +249,6 @@ class TestLoopActuallyLoops(unittest.TestCase):
             pu = prompt.upper()
             if "SURGICAL CODE DRAFTSMAN" in pu:
                 return "<|tool_call_start|>[write(path='x.py', content='v = 1\\n')]<|tool_call_end|>"
-            if "ZERO-TRUST QA MANDATE" in pu:
-                return "VERDICT: FAILED (Reason: no coverage)"
-            if "ZERO-TRUST SECURITY MANDATE" in pu:
-                return "VERDICT: PASSED"
-            if "AUTONOMOUS SWARM AUTO-JUDGE" in pu:
-                return "DECISION: REJECTED (Diagnostics: fix coverage)"
             return "OK"
 
         async def run():
@@ -262,6 +256,7 @@ class TestLoopActuallyLoops(unittest.TestCase):
                  patch("swarm.loop_engine.query_local_slot", side_effect=slot), \
                  patch("swarm.loop_engine.query_qwen_web", new_callable=AsyncMock, return_value="ok"), \
                  patch("swarm.loop_engine.ping_lead_advisor", new_callable=AsyncMock, return_value="plan"), \
+                 patch("swarm.loop_engine.run_test_suite", return_value={"success": False, "skipped": False, "runner": "pytest", "exit_code": 1, "output": "Failed"}), \
                  patch("swarm.loop_engine.commit_changes") as mock_commit:
                 out = await le.execute_zero_trust_task(task, "", td, "", None)
                 return out, mock_commit

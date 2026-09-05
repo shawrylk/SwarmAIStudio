@@ -334,3 +334,26 @@ def link_advisor_and_loop_sessions(advisor_session_id: str, loop_session_id: str
         if loop_sess:
             loop_sess["advisor_session_id"] = advisor_session_id
             save_loop_session(loop_sess)
+
+def attach_loop_to_session(session_id: str, loop_id: str, goal: str) -> Dict[str, Any]:
+    """Attach auto-dev loop state to an existing chat session."""
+    data = load_session(session_id)
+    if not data:
+        return {"error": "Session not found"}
+    data["loop"] = {
+        "id": loop_id,
+        "goal": goal,
+        "status": "running"
+    }
+    path = SESSIONS_DIR / f"{session_id}.json"
+    atomic_write_json(path, data)
+    return data
+
+
+def update_session_loop_status(session_id: str, status: str) -> None:
+    """Update the loop status badge on a chat session."""
+    data = load_session(session_id)
+    if data and "loop" in data:
+        data["loop"]["status"] = status
+        path = SESSIONS_DIR / f"{session_id}.json"
+        atomic_write_json(path, data)

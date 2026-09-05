@@ -1434,12 +1434,21 @@ def check_runner_covers_deliverable(
     covered = RUNNER_LANGUAGES.get(test_result.get("runner") or "")
     if not covered:
         return test_result
-    written_exts = {Path(p).suffix.lower() for p in written_paths if Path(p).suffix}
-    # Ignore non-code assets; they are not what a test runner is meant to cover.
-    code_exts = {e for e in written_exts if e not in {
-        ".md", ".txt", ".json", ".yml", ".yaml", ".toml", ".ini", ".cfg",
-        ".lock", ".gitignore", ".env", ".sql", ".csv", ".html", ".css",
-    }}
+    # Filter out auxiliary script and tooling directories (scripts/, tools/, bin/, ci/, .github/, docs/)
+    primary_code_paths = [
+        p for p in written_paths
+        if not any(part.lower() in {"scripts", "tools", "bin", "ci", ".github", "docs", "workflow", "workflows", "build"} for part in Path(p).parts)
+    ]
+    if not primary_code_paths:
+        return test_result
+
+    written_exts = {Path(p).suffix.lower() for p in primary_code_paths if Path(p).suffix}
+    known_code_exts = {ext for exts in RUNNER_LANGUAGES.values() for ext in exts} | {
+        ".c", ".cpp", ".cc", ".cxx", ".h", ".hpp", ".java", ".kt", ".kts", ".scala",
+        ".rs", ".rb", ".php", ".swift", ".dart", ".lua", ".sh", ".bash", ".zsh", ".ps1"
+    }
+    # Only test coverage if actual source code files with recognized code extensions were written
+    code_exts = {e for e in written_exts if e in known_code_exts}
     if not code_exts:
         return test_result
     if code_exts & covered:
@@ -1652,6 +1661,30 @@ def resolve_default_branch(repo_path: str) -> str:
     return "main"
 
 
+def detect_repo_primary_language(repo_path: str) -> Dict[str, str]:
+    """Detects repository primary programming language, extension, and framework."""
+    if not repo_path:
+        return {"language": "Generic", "ext": "", "framework": "Generic"}
+    p = Path(repo_path)
+    if not p.exists():
+        return {"language": "Generic", "ext": "", "framework": "Generic"}
+
+    if _select_dotnet_target(p) or list(p.glob("*.sln")) or list(p.glob("**/*.csproj")):
+        return {"language": "C# (.NET)", "ext": ".cs", "framework": ".NET / C#"}
+    if (p / "Cargo.toml").exists() or list(p.glob("**/*.rs")):
+        return {"language": "Rust", "ext": ".rs", "framework": "Cargo"}
+    if (p / "go.mod").exists() or list(p.glob("**/*.go")):
+        return {"language": "Go", "ext": ".go", "framework": "Go Modules"}
+    if (p / "package.json").exists() or (p / "tsconfig.json").exists():
+        if (p / "tsconfig.json").exists() or list(p.glob("**/*.ts")):
+            return {"language": "TypeScript", "ext": ".ts", "framework": "Node / TypeScript"}
+        return {"language": "JavaScript", "ext": ".js", "framework": "Node / JavaScript"}
+    if (p / "pyproject.toml").exists() or (p / "requirements.txt").exists() or (p / "setup.py").exists() or list(p.glob("**/*.py")):
+        return {"language": "Python", "ext": ".py", "framework": "Python"}
+
+    return {"language": "Generic", "ext": "", "framework": "Generic"}
+
+
 def detect_project_test_runner(repo_path: str) -> Optional[Dict[str, Any]]:
     """
     Detects the automated test suite and runner for the repository.
@@ -1850,7 +1883,10 @@ def run_test_suite(repo_path: str, custom_cmd: Optional[List[str]] = None, timeo
 
     t0 = time.time()
     try:
-        res = subprocess.run(cmd, cwd=str(rp), capture_output=True, text=True, timeout=timeout)
+        env = dict(os.environ)
+        if "python" in runner_name.lower() or "pytest" in runner_name.lower() or "unittest" in runner_name.lower():
+            env["PYTHONPATH"] = f"{str(rp)}:{env.get('PYTHONPATH', '')}".strip(":")
+        res = subprocess.run(cmd, cwd=str(rp), env=env, capture_output=True, text=True, timeout=timeout)
         duration_ms = round((time.time() - t0) * 1000, 1)
         full_out = (res.stdout.strip() + "\n" + res.stderr.strip()).strip()
 
@@ -2040,6 +2076,40 @@ def salvage_foreign_abs_path(abs_path: str, repo_root: Path) -> Optional[str]:
     return None
 
 
+def sanitize_file_content(content: str) -> str:
+    """Sanitize LLM file content: unescape literal \n / \t if present and strip artifact quotes."""
+    if not content or not isinstance(content, str):
+        return ""
+    
+    content_stripped = content.strip()
+    if len(content_stripped) >= 2:
+        if (content_stripped.startswith("'''") and content_stripped.endswith("'''")) or (content_stripped.startswith('"""') and content_stripped.endswith('"""')):
+            content_stripped = content_stripped[3:-3].strip()
+        elif (content_stripped.startswith("'") and content_stripped.endswith("'")) or (content_stripped.startswith('"') and content_stripped.endswith('"')):
+            content_stripped = content_stripped[1:-1]
+        content = content_stripped
+
+    # If content has literal \n and very few or no real newlines, unescape it
+    if "\\n" in content:
+        real_newline_count = content.count("\n")
+        escaped_newline_count = content.count("\\n")
+        if escaped_newline_count > 0 and (real_newline_count < 3 or escaped_newline_count > real_newline_count):
+            content = (
+                content.replace("\\r\\n", "\n")
+                .replace("\\n", "\n")
+                .replace("\\t", "\t")
+                .replace('\\"', '"')
+                .replace("\\'", "'")
+            )
+    
+    # Remove trailing broken quotation mark artifacts on their own line like "\n'" or "\n\""
+    content = content.rstrip()
+    if re.search(r'\n\s*[\'"]$', content):
+        content = re.sub(r'\n\s*[\'"]$', '', content).rstrip()
+
+    return content + ("\n" if not content.endswith("\n") else "")
+
+
 def extract_code_blocks_and_write(repo_path: str, llm_output: str) -> List[Dict[str, Any]]:
     """
     Extracts code files from LLM output and writes them to the repository.
@@ -2083,6 +2153,34 @@ def extract_code_blocks_and_write(repo_path: str, llm_output: str) -> List[Dict[
             log_event("warn", "file_writer", f"Rejected absolute path with no repo context: {clean_path}")
             return None
 
+        # Strip common prompt placeholder prefixes
+        for placeholder_prefix in ("relative/path/", "relative_path/", "relative/", "path/to/", "your/path/", "repo_path/", "repository/", "target/", "example/"):
+            if clean_path.lower().startswith(placeholder_prefix):
+                clean_path = clean_path[len(placeholder_prefix):].lstrip("/")
+
+        # Reject candidates that are version numbers (e.g. 6.0.0, 1.2.3) or purely numeric
+        base_name = Path(clean_path).name
+        if re.match(r'^\d+(\.\d+)*$', base_name) or re.match(r'^\.?\d+$', Path(clean_path).suffix):
+            log_event("warn", "file_writer", f"Rejected semver/numeric candidate path: {clean_path}")
+            return None
+
+        # Validate that the candidate has a real known file extension or recognized filename
+        VALID_FILE_EXTENSIONS = {
+            ".cs", ".fs", ".vb", ".py", ".pyi", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs",
+            ".vue", ".svelte", ".rs", ".go", ".c", ".cpp", ".cc", ".cxx", ".h", ".hpp",
+            ".java", ".kt", ".kts", ".scala", ".rb", ".php", ".swift", ".dart", ".lua",
+            ".sh", ".bash", ".zsh", ".ps1", ".json", ".yaml", ".yml", ".toml", ".xml",
+            ".csproj", ".sln", ".props", ".targets", ".config", ".md", ".txt", ".csv",
+            ".html", ".css", ".scss", ".sass", ".less", ".sql", ".graphql", ".proto",
+            ".env", ".gitignore", ".dockerignore", ".tscn", ".gd", ".uid", ".tres"
+        }
+        cand_ext = Path(clean_path).suffix.lower()
+        if cand_ext not in VALID_FILE_EXTENSIONS and base_name not in {
+            "Makefile", "Dockerfile", "Containerfile", "Procfile", "Rakefile", "Gemfile", "Vagrantfile", "CMakeLists.txt", "project.godot"
+        }:
+            log_event("warn", "file_writer", f"Rejected candidate path without valid file extension: {clean_path}")
+            return None
+
         # Strip accidental home/ or foreign repo prefixes if present
         if rp:
             parts = Path(clean_path).parts
@@ -2109,9 +2207,22 @@ def extract_code_blocks_and_write(repo_path: str, llm_output: str) -> List[Dict[
         ]:
             return None
 
-        if clean_path in seen_paths:
-            pass
-        seen_paths.add(clean_path)
+        # Smart Extension Alignment: Prevent smaller models from emitting .py extension for C# / Rust / Go code
+        if rp:
+            repo_lang = detect_repo_primary_language(str(rp))
+            if repo_lang.get("ext") == ".cs" and clean_path.endswith(".py"):
+                if "using System" in file_content or "namespace " in file_content or "public class " in file_content or "public record " in file_content or "public interface " in file_content:
+                    orig_path = clean_path
+                    clean_path = clean_path[:-3] + ".cs"
+                    log_event("info", "file_writer", f"Auto-aligned C# source extension: {orig_path} -> {clean_path}")
+            elif repo_lang.get("ext") == ".rs" and clean_path.endswith(".py"):
+                if "fn " in file_content or "pub struct " in file_content or "use std::" in file_content:
+                    clean_path = clean_path[:-3] + ".rs"
+            elif repo_lang.get("ext") == ".go" and clean_path.endswith(".py"):
+                if "package " in file_content or "func " in file_content:
+                    clean_path = clean_path[:-3] + ".go"
+
+        file_content = sanitize_file_content(file_content)
 
         abs_path_str = ""
         if rp and rp.exists():
@@ -2128,7 +2239,7 @@ def extract_code_blocks_and_write(repo_path: str, llm_output: str) -> List[Dict[
                 log_event("info", "file_writer", f"Wrote file '{clean_path}' ({len(file_content)} bytes)")
             except Exception as e:
                 log_event("warn", "file_writer", f"Failed to write file {clean_path}: {e}")
-                abs_path_str = str(target_p)
+                return None
         elif rp:
             abs_path_str = str(rp / clean_path)
         else:
@@ -2192,6 +2303,18 @@ def extract_code_blocks_and_write(repo_path: str, llm_output: str) -> List[Dict[
         target_file = ""
 
         # A. Info string matching
+        # Ignore namespaces, imports, code statements after fence
+        if any(k in info_str.lower() for k in ["using ", "import ", "include ", "namespace ", "from ", "package ", "var ", "let ", "const ", "def ", "class ", "fn ", "pub "]):
+            info_str = ""
+
+        # Strip leading language identifier if followed by path (e.g. "cs src/MyClass.cs" -> "src/MyClass.cs")
+        tokens = info_str.split()
+        if len(tokens) >= 2 and tokens[0].lower() in {
+            "cs", "csharp", "py", "python", "js", "javascript", "ts", "typescript",
+            "bash", "sh", "json", "yaml", "yml", "cpp", "c", "rs", "rust", "go", "html", "css"
+        }:
+            info_str = " ".join(tokens[1:])
+
         fp_match = re.search(r'(?:filepath|filename|file)=["\']?([^"\'\s]+)["\']?', info_str, re.IGNORECASE)
         if fp_match:
             target_file = fp_match.group(1)
@@ -2202,7 +2325,7 @@ def extract_code_blocks_and_write(repo_path: str, llm_output: str) -> List[Dict[
                 target_file = candidate
         elif ("." in info_str or "/" in info_str) and not any(k in info_str.lower() for k in ["example", "snippet", "output"]):
             candidate = info_str.strip().strip('"`\'')
-            if not candidate.startswith("```") and "." in candidate:
+            if not candidate.startswith("```") and "." in candidate and not re.match(r'^\d+(\.\d+)*$', candidate):
                 target_file = candidate
 
         # B. Text immediately preceding code fence

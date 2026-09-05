@@ -1,5 +1,5 @@
 """
-Super-Orchestrator Multi-Engine Execution Bridge
+Orchestrator Multi-Engine Execution Bridge
 Unifies and bridges all installed local and cloud AI engines:
 1. Claude Code CLI (`claude -p`) — Deep reasoning & escalation engine
 2. Antigravity / Gemini CLI (`agy` / `gemini`) — Codebase orchestration engine
@@ -94,11 +94,11 @@ async def probe_all_backends() -> Dict[str, Any]:
         },
         "liquid_lfm": {
             "id": "liquid_lfm",
-            "name": "Liquid LFM 2.5 (Local GPU Host)",
+            "name": "Liquid LFM 2.5 VL (Local GPU Host)",
             "role": "Continuous Batching Sub-Agent Slots",
             "type": "local_gpu",
             "bin": "http://localhost:8034",
-            "version": "Liquid LFM 2.5 (2.6B Q8)",
+            "version": "Liquid LFM 2.5 VL (3B Q8)",
             "available": lfm_status["available"],
             "status": lfm_status["status"],
             "capabilities": ["zero_cost_ast_scans", "rapid_syntax_checks", "parallel_file_routing"]
@@ -106,7 +106,7 @@ async def probe_all_backends() -> Dict[str, Any]:
         "qwen_oracle": {
             "id": "qwen_oracle",
             "name": "Qwen 3.8 Max Web Oracle",
-            "role": "Adversarial Consensus & Hallucination Gatekeeper",
+            "role": "Cross-Check & Verification",
             "type": "web_and_cli",
             "bin": str(QWEN_ORACLE_SCRIPT),
             "version": "Qwen 3.8 Max",
@@ -122,7 +122,7 @@ async def probe_all_backends() -> Dict[str, Any]:
         "backends": backends,
         "total_count": len(backends),
         "active_count": active_count,
-        "mode": "Unified Super-Orchestrator"
+        "mode": "Unified Orchestrator"
     }
 
 async def execute_claude_cli(prompt: str, cwd: str = "", timeout_secs: int = 45) -> str:
@@ -204,3 +204,6 @@ async def test_backend_connection(backend_id: str, sample_prompt: str = "Explain
         return {"backend": "agy_gemini", "success": "Error:" not in out, "duration_s": duration, "response": out[:200]}
 
     return {"backend": backend_id, "success": False, "error": "Unknown backend"}
+
+test_backend_connection.__test__ = False
+

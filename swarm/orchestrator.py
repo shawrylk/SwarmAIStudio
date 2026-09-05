@@ -25,54 +25,44 @@ from swarm.artifacts import save_artifact_to_disk
 from swarm.sessions import save_session_turn
 from swarm.context7_engine import fetch_latest_doc_context, query_context7_library
 from swarm.planner_cbo import optimize_and_select_best_plan
+from swarm.memory_engine import read_disk_memory_files, format_disk_memory_prompt_block
+from swarm.web_scout import search_web_live, format_web_scout_prompt_block
 from swarm.rules_engine import format_enforced_rules_prompt
 
 _orchestrator_lock = threading.RLock()
 MODEL_ASSIGNMENTS = load_model_assignments()
 
 SWARM_LOOP_ROSTER = [
-    {"id": "dev", "name": "Surgical Draftsman", "role": "dev"},
-    {"id": "qa", "name": "Zero-Trust QA Subagent", "role": "qa"},
-    {"id": "sec", "name": "Threat & Security Auditor", "role": "security"},
-    {"id": "oracle", "name": "Adversarial Consensus Oracle", "role": "oracle"},
-    {"id": "judge", "name": "Consensus Auto-Judge", "role": "judge"}
+    {"id": "dev", "name": "Code Implementer", "role": "dev"},
+    {"id": "verify", "name": "Test & Verify", "role": "verify"},
 ]
 
 SWARM_STATE = {
     "summary": {
-        "total_nodes": 1 + 2 + 5,
+        "total_nodes": 3,
         "orchestrators": 1,
-        "consensus_oracles": 2,
-        "subagent_slots": 5,
+        "consensus_oracles": 1,
+        "subagent_slots": 2,
         "max_concurrent_agents": MAX_CONCURRENT_AGENTS,
         "running_now": 0
     },
     "orchestrator": {
-        "id": "gemini",
-        "name": "Gemini Lead Advisor",
-        "role": "Chief Architect & Task Decomposer",
-        "active_model": MODEL_ASSIGNMENTS.get("gemini", "gemini-3.1-pro-high"),
+        "id": "advisor",
+        "name": "Lead Advisor",
+        "role": "Chief Architect & Task Orchestrator",
+        "active_model": MODEL_ASSIGNMENTS.get("gemini", "local-lfm"),
         "status": "idle",
-        "task": "Awaiting user task..."
+        "task": "Ready"
     },
     "consensus_nodes": [
         {
             "id": "lfm",
-            "name": "Local GPU Swarm Host",
-            "role": "Dynamic Batching Slots (8 Slots Available)",
-            "active_model": "Liquid LFM 2.5 (2.6B Q8)",
+            "name": "Qwen 3.8 27B Local Host",
+            "role": "3 Continuous Batching Slots (1 Orch + 2 Sub-Agents)",
+            "active_model": "Qwen 3.8 27B (Q4_K_S · MTP + Sparse Attention)",
             "status": "online",
-            "task": "Port 8034 (8 continuous batching slots)",
-            "tools": ["parallel_batching", "tool_loop", "check_syntax"]
-        },
-        {
-            "id": "qwen",
-            "name": "Qwen Web Oracle",
-            "role": "Adversarial Consensus Peer",
-            "active_model": MODEL_ASSIGNMENTS.get("qwen", "qwen-3.8-max"),
-            "status": "ready",
-            "task": "chat.qwen.ai session (Qwen 3.8 Max)",
-            "tools": ["web_ask", "oracle_crosscheck"]
+            "task": "Port 8034 (1 Orchestrator + 2 Sub-Agents)",
+            "tools": ["completion", "pi_agent", "sparse_attention", "mtp_speculative"]
         }
     ],
     "sub_agents": []
@@ -154,37 +144,16 @@ async def query_local_slot(prompt: str, system: str = "You are a specialized sub
     except Exception as e:
         return f"Slot Execution Error: {e}"
 
-async def query_gemini(prompt: str, model_id: str = None) -> str:
-    target_model = model_id or MODEL_ASSIGNMENTS.get("gemini", "gemini-3.1-pro-high")
+async def query_gemini(prompt: str, model_id: str = None, max_tokens: int = 8192) -> str:
+    target_model = model_id or "LFM2.5-VL-3B-Q8_0.gguf"
     update_agent_status("orchestrator", "gemini", "running", f"🧠 Reasoning & Synthesizing ({target_model})...")
     try:
-        # Check if agy or gemini is available
-        cli_cmd = shutil.which("agy") or shutil.which("gemini")
-        if cli_cmd:
-            args = [cli_cmd, "-p", prompt]
-            proc = await asyncio.create_subprocess_exec(
-                *args,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
-            )
-            try:
-                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=40.0)
-                update_agent_status("orchestrator", "gemini", "idle", "Awaiting user task...")
-                if proc.returncode == 0 and stdout.strip():
-                    return stdout.decode().strip()
-            except asyncio.TimeoutError:
-                try:
-                    proc.kill()
-                except Exception:
-                    pass
-                update_agent_status("orchestrator", "gemini", "idle", "Gemini CLI timed out, falling back to local GPU slot")
-        
-        # Fallback to local GPU slot
-        update_agent_status("orchestrator", "gemini", "idle", "Synthesized via Local GPU")
-        return await query_local_slot(prompt, system="You are the Lead Advisor AI Architect.")
+        res = await query_local_slot(prompt, system="You are the Lead Advisor AI Architect and Swarm Orchestrator.", max_tokens=max_tokens)
+        update_agent_status("orchestrator", "gemini", "idle", "Awaiting user task...")
+        return res
     except Exception as e:
         update_agent_status("orchestrator", "gemini", "idle", "Synthesized via Local GPU")
-        return await query_local_slot(prompt, system="You are the Lead Advisor AI Architect.")
+        return f"Lead Advisor Error: {e}"
 
 async def query_qwen_web(prompt: str) -> str:
     active_qwen = MODEL_ASSIGNMENTS.get("qwen", "qwen-3.8-max")
@@ -214,9 +183,13 @@ async def query_qwen_web(prompt: str) -> str:
         )
         try:
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=20.0)
-            if proc.returncode == 0 and stdout.strip():
+            out_str = stdout.decode(errors="ignore").strip()
+            if proc.returncode == 0 and out_str:
+                if any(err_pat in out_str.lower() for err_pat in ["daily usage limit", "issue connecting", "rate limit", "please wait"]):
+                    update_agent_status("consensus_nodes", "qwen", "offline", "Oracle daily rate limit reached")
+                    return f"{QWEN_UNAVAILABLE_PREFIX} Qwen Web Oracle daily rate limit reached (offline fallback). Consensus skipped."
                 update_agent_status("consensus_nodes", "qwen", "ready", f"chat.qwen.ai session ({active_qwen})")
-                return stdout.decode(errors="ignore").strip()
+                return out_str
             err = stderr.decode(errors="ignore").strip()[:160]
             update_agent_status("consensus_nodes", "qwen", "offline", "Oracle returned no output")
             return f"{QWEN_UNAVAILABLE_PREFIX} Qwen Web Oracle returned no answer (exit {proc.returncode}). Consensus NOT performed.{f' Detail: {err}' if err else ''}"
@@ -232,274 +205,67 @@ async def query_qwen_web(prompt: str) -> str:
         return f"{QWEN_UNAVAILABLE_PREFIX} Qwen Web Oracle execution failed: {e}. Consensus NOT performed."
 
 def plan_dynamic_swarm_for_task(message: str, has_repo: bool) -> List[Dict[str, Any]]:
+    """Select a single focused agent configuration based on task intent.
+    Returns a list with one entry for API compatibility."""
     msg_lower = message.lower()
     
-    # 1. Full Deep Multi-Vector Audit (6 Slots)
-    if any(k in msg_lower for k in ["deep review", "full audit", "security audit", "performance audit", "comprehensive review", "deep audit"]) or ("deep" in msg_lower and any(w in msg_lower for w in ["audit", "review", "security", "performance"])):
-        return [
-            {
-                "id": "agent_sec",
-                "name": "🛡️ Security Threat Auditor",
-                "skill": "OWASP & Injection Hunter",
-                "role": "Level 3: Security & Auth",
-                "engine": "Local LFM (Slot 1)",
-                "status": "idle",
-                "task": "Idle",
-                "tools": ["auth_audit", "injection_check", "secret_leak_hunt"],
-                "prompt_template": "Task: Security Threat Auditor. Analyze the repository context specifically for vulnerabilities, injection vectors, authentication bypasses, and credential exposure."
-            },
-            {
-                "id": "agent_perf",
-                "name": "⚡ Performance & Memory Profiler",
-                "skill": "Latency & Allocation Optimizer",
-                "role": "Level 3: Resource Efficiency",
-                "engine": "Local LFM (Slot 2)",
-                "status": "idle",
-                "task": "Idle",
-                "tools": ["n_plus_one_scan", "async_block_check", "mem_leak_detect"],
-                "prompt_template": "Task: Performance & Resource Auditor. Detect latency bottlenecks, unnecessary allocations, blocking I/O calls, and unindexed database queries."
-            },
-            {
-                "id": "agent_arch",
-                "name": "📐 Architecture & Modular Gate",
-                "skill": "Clean Architecture & Cohesion",
-                "role": "Level 3: Design Integrity",
-                "engine": "Local LFM (Slot 3)",
-                "status": "idle",
-                "task": "Idle",
-                "tools": ["check_syntax", "coupling_audit", "interface_verify"],
-                "prompt_template": "Task: Architecture Gatekeeper. Evaluate modular boundaries, domain model coupling, code duplication, and architectural integrity."
-            },
-            {
-                "id": "agent_qa",
-                "name": "🧪 QA & Regression Gatekeeper",
-                "skill": "Compiler & Contract Verifier",
-                "role": "Level 3: Regression Prevention",
-                "engine": "Local LFM (Slot 4)",
-                "status": "idle",
-                "task": "Idle",
-                "tools": ["dotnet_build", "contract_verify", "edge_case_probe"],
-                "prompt_template": "Task: QA & Regression Gatekeeper. Check for breaking API changes, compiler contract violations, and missing test coverage."
-            },
-            {
-                "id": "agent_scout",
-                "name": "🔍 Dependency & Symbol Indexer",
-                "skill": "Codebase Knowledge Graph",
-                "role": "Level 3: Structural Context",
-                "engine": "Local LFM (Slot 5)",
-                "status": "idle",
-                "task": "Idle",
-                "tools": ["find_by_name", "grep_search", "gitnexus"],
-                "prompt_template": "Task: Scout Indexer. Map project entrypoints, manifests, and active dependency links."
-            },
-            {
-                "id": "agent_db",
-                "name": "💾 Database & I/O Inspector",
-                "skill": "SQL & Persistence Optimizer",
-                "role": "Level 3: Data Layer Quality",
-                "engine": "Local LFM (Slot 6)",
-                "status": "idle",
-                "task": "Idle",
-                "tools": ["sql_audit", "transaction_check", "schema_verify"],
-                "prompt_template": "Task: Database & I/O Inspector. Check entity relationships, migration consistency, and transaction boundary safety."
-            }
-        ]
-
-    # 2. Latest Docs / Framework & Knowledge Scout (Context7)
-    elif any(k in msg_lower for k in ["doc", "docs", "documentation", "context7", "latest api", "how to use", "guide", "example", "library", "sdk"]):
-        return [
-            {
-                "id": "agent_c7_docs",
-                "name": "📚 Context7 Documentation & API Scout",
-                "skill": "Live Version-Accurate Doc & Knowledge Retrieval",
-                "role": "Level 3: Latest Knowledge Grounding",
-                "engine": "Context7 MCP & CLI (ctx7)",
-                "status": "idle",
-                "task": "Idle",
-                "tools": ["ctx7", "context7_docs", "library_resolve"],
-                "prompt_template": "Task: Context7 Documentation Scout. Retrieve and verify latest API signatures, breaking changes, and modern best practices."
-            },
-            {
-                "id": "agent_impl",
-                "name": "⚙️ Surgical Code Draftsman",
-                "skill": "Production Patch Synthesis",
-                "role": "Level 3: Code Implementation",
-                "engine": "Local LFM (Slot 2)",
-                "status": "idle",
-                "task": "Idle",
-                "tools": ["replace_content", "write_file"],
-                "prompt_template": "Task: Synthesize working code examples using the version-accurate Context7 documentation."
-            },
-            {
-                "id": "agent_qa",
-                "name": "🧪 LSP & Syntax Verifier",
-                "skill": "Diagnostics & Type Safety",
-                "role": "Level 3: Syntax Verification",
-                "engine": "Local LFM (Slot 3)",
-                "status": "idle",
-                "task": "Idle",
-                "tools": ["check_syntax", "contract_verify"],
-                "prompt_template": "Task: Verify syntax validity, null safety, and edge-case contracts against latest specs."
-            }
-        ]
-
-    # 3. Surgical Code Implementation / Bug Fix (4 Slots)
-    elif any(k in msg_lower for k in ["build", "implement", "create worktree", "fix", "bug", "add feature", "refactor", "write code", "patch", "exception", "error", "null"]):
-        return [
-            {
-                "id": "agent_scout",
-                "name": "🔍 Symbol & AST Scout",
-                "skill": "Codebase Navigation & File Hunter",
-                "role": "Level 3: File Navigation",
-                "engine": "Local LFM (Slot 1)",
-                "status": "idle",
-                "task": "Idle",
-                "tools": ["find_by_name", "grep_search"],
-                "prompt_template": "Task: Locate exact target files, classes, methods, and configurations needed for this change."
-            },
-            {
-                "id": "agent_impl",
-                "name": "⚙️ Surgical Code Draftsman",
-                "skill": "Production Patch Synthesis",
-                "role": "Level 3: Code Implementation",
-                "engine": "Local LFM (Slot 2)",
-                "status": "idle",
-                "task": "Idle",
-                "tools": ["replace_content", "write_file"],
-                "prompt_template": "Task: Draft surgical, concrete, production-ready code changes with clean error handling."
-            },
-            {
-                "id": "agent_qa",
-                "name": "🧪 LSP & Syntax Verifier",
-                "skill": "Diagnostics & Type Safety",
-                "role": "Level 3: Syntax Verification",
-                "engine": "Local LFM (Slot 3)",
-                "status": "idle",
-                "task": "Idle",
-                "tools": ["check_syntax", "dotnet_build"],
-                "prompt_template": "Task: Verify syntax validity, null safety, contract invariants, and edge-case testing."
-            },
-            {
-                "id": "agent_gate",
-                "name": "🛡️ Blast Radius Gatekeeper",
-                "skill": "Zero-Drift Regression Protection",
-                "role": "Level 3: Gatekeeper",
-                "engine": "Local LFM (Slot 4)",
-                "status": "idle",
-                "task": "Idle",
-                "tools": ["git_diff", "gitnexus_impact"],
-                "prompt_template": "Task: Audit blast radius, dependent components, and ensure zero unintended side effects."
-            }
-        ]
-
-    # 4. Standard Code Review / Diff Check (4 Slots)
-    elif any(k in msg_lower for k in ["review", "audit", "check diff", "inspect code", "quality"]):
-        return [
-            {
-                "id": "agent_sec",
-                "name": "🛡️ Security Auditor",
-                "skill": "Threat & Exploit Scanner",
-                "role": "Level 3: Vulnerability Scan",
-                "engine": "Local LFM (Slot 1)",
-                "status": "idle",
-                "task": "Idle",
-                "tools": ["injection_scan", "auth_check"],
-                "prompt_template": "Task: Security Auditor. Check code and active diffs for security risks, injection vulnerabilities, and secret leaks."
-            },
-            {
-                "id": "agent_perf",
-                "name": "⚡ Performance Auditor",
-                "skill": "Latency & Memory Hunter",
-                "role": "Level 3: Resource Profiler",
-                "engine": "Local LFM (Slot 2)",
-                "status": "idle",
-                "task": "Idle",
-                "tools": ["n_plus_1", "async_block"],
-                "prompt_template": "Task: Performance Auditor. Check for hot loops, unoptimized allocations, and async locking."
-            },
-            {
-                "id": "agent_arch",
-                "name": "📐 Architecture & QA",
-                "skill": "Drift & Regression Gate",
-                "role": "Level 3: Codebase Standards",
-                "engine": "Local LFM (Slot 3)",
-                "status": "idle",
-                "task": "Idle",
-                "tools": ["check_syntax", "contract_gate"],
-                "prompt_template": "Task: Architecture & QA. Audit design patterns, modular coupling, and regression risks."
-            },
-            {
-                "id": "agent_scout",
-                "name": "🔍 Scout Indexer",
-                "skill": "File & Dependency Graph",
-                "role": "Level 3: Structural Context",
-                "engine": "Local LFM (Slot 4)",
-                "status": "idle",
-                "task": "Idle",
-                "tools": ["find_by_name", "gitnexus"],
-                "prompt_template": "Task: Scout Indexer. Map touchpoints and affected manifests."
-            }
-        ]
-
-    # 5. Pure File Search / Git Locate (1 Slot)
-    elif any(k in msg_lower for k in ["find file", "where is", "locate", "grep", "list files", "scan files"]):
-        return [
-            {
-                "id": "agent_scout",
-                "name": "🔍 Scout File Hunter",
-                "skill": "High-Speed Regex & Glob Finder",
-                "role": "Level 3: Scout Specialist",
-                "engine": "Local LFM (Slot 1)",
-                "status": "idle",
-                "task": "Idle",
-                "tools": ["find_by_name", "grep_search", "gitnexus"],
-                "prompt_template": "Task: Scout File Hunter. Quickly find matching file paths, symbols, and structural locations."
-            }
-        ]
-
-    # 6. General Q&A / Architecture Design (3 Slots)
+    # File search / locate
+    if any(k in msg_lower for k in ["find", "where", "locate", "grep", "list files", "scan files", "search"]):
+        return [{
+            "id": "agent_core",
+            "name": "🔍 Codebase Scout",
+            "skill": "File & Symbol Search",
+            "role": "Search",
+            "engine": "Local LFM",
+            "status": "idle",
+            "task": "Idle",
+            "tools": ["find_by_name", "grep_search"],
+            "prompt_template": "Find the requested files, symbols, or patterns in the codebase. Be precise and direct."
+        }]
+    
+    # Documentation / API lookup
+    elif any(k in msg_lower for k in ["doc", "docs", "documentation", "context7", "latest api", "how to use", "guide", "library", "sdk"]):
+        return [{
+            "id": "agent_core",
+            "name": "📚 Documentation Scout",
+            "skill": "API & Documentation Lookup",
+            "role": "Docs",
+            "engine": "Context7 + Local LFM",
+            "status": "idle",
+            "task": "Idle",
+            "tools": ["ctx7", "context7_docs"],
+            "prompt_template": "Retrieve and explain the latest documentation, API signatures, and usage examples for the requested library or framework."
+        }]
+    
+    # Code review / audit
+    elif any(k in msg_lower for k in ["review", "audit", "security", "performance", "check", "inspect"]):
+        return [{
+            "id": "agent_core",
+            "name": "🔍 Code Reviewer",
+            "skill": "Code Review & Analysis",
+            "role": "Review",
+            "engine": "Local LFM",
+            "status": "idle",
+            "task": "Idle",
+            "tools": ["reasoning", "analysis"],
+            "prompt_template": "Review the code for correctness, security issues, performance problems, and architectural concerns. Provide actionable recommendations."
+        }]
+    
+    # Default: general coding assistance
     else:
-        return [
-            {
-                "id": "agent_core",
-                "name": "💡 Technical Solution Specialist",
-                "skill": "Algorithmic & Mechanistic Design",
-                "role": "Level 3: Core Solution",
-                "engine": "Local LFM (Slot 1)",
-                "status": "idle",
-                "task": "Idle",
-                "tools": ["reasoning", "solution_blueprint"],
-                "prompt_template": "Task: Provide the direct core technical solution, mathematical/algorithmic mechanisms, and clear explanation."
-            },
-            {
-                "id": "agent_scaling",
-                "name": "⚡ Concurrency & Scalability Specialist",
-                "skill": "Resource & Latency Optimization",
-                "role": "Level 3: Concurrency & Performance",
-                "engine": "Local LFM (Slot 2)",
-                "status": "idle",
-                "task": "Idle",
-                "tools": ["latency_profile", "scale_design"],
-                "prompt_template": "Task: Analyze latency, memory, scaling characteristics, and concurrency implications."
-            },
-            {
-                "id": "agent_tradeoffs",
-                "name": "📐 Production Architecture & Trade-offs",
-                "skill": "Pattern Evaluation & Risk Analysis",
-                "role": "Level 3: Trade-off Gate",
-                "engine": "Local LFM (Slot 3)",
-                "status": "idle",
-                "task": "Idle",
-                "tools": ["tradeoff_matrix", "pattern_audit"],
-                "prompt_template": "Task: Evaluate production trade-offs, pitfalls to avoid, and alternative approaches."
-            }
-        ]
+        return [{
+            "id": "agent_core",
+            "name": "💡 Coding Assistant",
+            "skill": "Technical Problem Solving",
+            "role": "Assistant",
+            "engine": "Local LFM",
+            "status": "idle",
+            "task": "Idle",
+            "tools": ["reasoning", "solution_blueprint"],
+            "prompt_template": "Provide a clear, direct technical answer. Include code examples where helpful. Focus on practical solutions."
+        }]
 
 async def execute_task_aware_swarm(sub_agents: List[Dict[str, Any]], repo_block: str, user_req: str, repo_path: str = "", concurrency: int = 0) -> Dict[str, str]:
-    # The Cost-Based Optimizer's selected parallelism width (or the global
-    # MAX_CONCURRENT_AGENTS cap) genuinely bounds how many GPU slots run at once.
-    # Previously every agent was dispatched with an unbounded gather(), so the
-    # CBO's "Parallel: Nx" figure and MAX_CONCURRENT_AGENTS were purely cosmetic.
     slot_limit = concurrency if concurrency and concurrency > 0 else MAX_CONCURRENT_AGENTS
     slot_limit = max(1, min(slot_limit, MAX_CONCURRENT_AGENTS))
     semaphore = asyncio.Semaphore(slot_limit)
@@ -511,26 +277,47 @@ async def execute_task_aware_swarm(sub_agents: List[Dict[str, Any]], repo_block:
     tasks = {}
     rules_block = format_enforced_rules_prompt(repo_path)
     
-    c7_docs_context = ""
-    for agent in sub_agents:
-        if agent["id"] == "agent_c7_docs":
-            words = [w for w in user_req.split() if len(w) > 2]
-            target_lib = words[0] if words else "fastapi"
-            for w in words:
-                if w.lower() in ["fastapi", "react", "nextjs", "pydantic", "drizzle", "redis", "langchain", "tailwind", "prisma", "express", "vitest", "pytest", "fastmcp"]:
-                    target_lib = w.lower()
-                    break
-            c7_docs_context = fetch_latest_doc_context(target_lib, user_req)
+    # 1. Fetch Disk Memory Facts
+    disk_memory_data = read_disk_memory_files(repo_path)
+    disk_memory_block = format_disk_memory_prompt_block(disk_memory_data)
+
+    # 2. Fetch Live Web Grounding
+    web_res = search_web_live(user_req)
+    web_scout_block = format_web_scout_prompt_block(user_req, web_res)
 
     for agent in sub_agents:
         agent_id = agent["id"]
-        if agent_id == "agent_c7_docs":
-            prompt = f"{c7_docs_context}\n\nTask: Extract and summarize exact live signatures and usage for: '{user_req}'"
-        else:
-            prompt = f"{rules_block}\n\n{repo_block}\n\n{c7_docs_context}\n\nUser Request: {user_req}\n\n{agent.get('prompt_template', '')}"
+        
+        if agent_id == "agent_memory":
+            # Fast disk memory extraction
+            tasks[agent_id] = asyncio.sleep(0.01, result=disk_memory_block)
+            update_agent_status("sub_agents", agent_id, "running", f"⚡ {agent['name']} reading disk memory...")
+            continue
+            
+        if agent_id == "agent_web":
+            # Fast web scout output
+            tasks[agent_id] = asyncio.sleep(0.01, result=web_scout_block)
+            update_agent_status("sub_agents", agent_id, "running", f"⚡ {agent['name']} searching live web...")
+            continue
 
-        update_agent_status("sub_agents", agent_id, "running", f"⚡ {agent['name']} ({agent['skill']}) thinking...")
-        tasks[agent_id] = _run_with_slot(query_local_slot(prompt, system=f"You are the {agent['name']} with specialized skill '{agent['skill']}'. Enforce Clean Architecture (small functions ≤30 lines, 1 domain class per file, Dependency Injection)."))
+        prompt = f"""{rules_block}
+
+{disk_memory_block}
+
+{web_scout_block}
+
+{repo_block}
+
+User Request:
+{user_req}
+
+Specialist Assignment:
+{agent.get('prompt_template', '')}
+
+Instruction: Execute your specialized role with rigorous grounding in the provided disk memory and web evidence. Do not guess or hallucinate. Enforce Clean Architecture (≤35 lines per function, single responsibility, Dependency Injection)."""
+
+        update_agent_status("sub_agents", agent_id, "running", f"⚡ {agent['name']} ({agent['skill']}) analyzing...")
+        tasks[agent_id] = _run_with_slot(query_local_slot(prompt, system=f"You are the {agent['name']} specialized in {agent['skill']}."))
 
     results = await asyncio.gather(*tasks.values(), return_exceptions=True)
     
@@ -546,17 +333,14 @@ def route_request(message: str, has_repo: bool) -> Dict[str, Any]:
     msg_lower = message.lower()
     is_pure_local_action = any(k in msg_lower for k in ["scan", "find file", "grep", "check syntax", "compile", "run test", "list files", "read file"])
     needs_crosscheck = any(k in msg_lower for k in ["review", "audit", "compare", "design", "architecture", "plan", "consensus"])
-    is_general_chat = not has_repo and any(k in msg_lower for k in ["what is", "how do", "explain", "tell me", "difference", "history", "algorithm", "concept"])
     
-    selected_models = ["gemini", "lfm"]
+    selected_models = ["lfm"]
     bypassed_models = []
 
-    if is_pure_local_action and not needs_crosscheck:
-        bypassed_models.append({"id": "qwen", "reason": "Bypassed (Chat AI has no local filesystem access)"})
-    elif needs_crosscheck or is_general_chat:
+    if needs_crosscheck and script_is_runnable(QWEN_ORACLE_SCRIPT):
         selected_models.append("qwen")
     else:
-        selected_models.append("qwen")
+        bypassed_models.append({"id": "qwen", "reason": "Bypassed for local GPU acceleration"})
 
     return {
         "selected": selected_models,
@@ -568,13 +352,49 @@ def route_request(message: str, has_repo: bool) -> Dict[str, Any]:
 async def process_advisor_chat(message: str, repo_path: str = "", session_id: str = "") -> Dict[str, Any]:
     start_t = time.time()
     status_steps = []
-    
-    # 1. Scout Repository Context & Enforce Rules
+    msg_lower = message.strip().lower()
+
+    # 1. Scout Repository Context & Disk Memory
     ctx = extract_deep_repo_context(repo_path)
     repo_block = format_repo_prompt_block(ctx)
     rules_block = format_enforced_rules_prompt(repo_path)
+    
+    # Check for Tier 1: Direct Fast Answer Mode (Greetings, simple conversions, quick clarifications)
+    is_simple_greeting = (
+        not ctx and
+        len(message.split()) <= 10 and
+        any(msg_lower.startswith(g) for g in ["hi", "hello", "hey", "good morning", "good evening", "who are you", "what can you do", "thanks", "thank you"])
+    )
+
+    if is_simple_greeting:
+        status_steps.append("⚡ Direct Fast Response · Local Liquid LFM (Single Slot)")
+        direct_prompt = f"User greeting: '{message}'. Respond politely and concisely as Swarm AI Assistant."
+        answer = await query_local_slot(direct_prompt, system="You are the Swarm AI Studio Coding Assistant.")
+        duration = round(time.time() - start_t, 2)
+        status_steps.append(f"✓ Answered directly in {duration}s")
+        response_payload = {
+            "prompt": message,
+            "answer": answer,
+            "status_steps": status_steps,
+            "tier": "direct",
+            "thought_summary": f"Direct Answer · {duration}s",
+            "routing": {"selected": ["lfm"], "bypassed": [], "tier": "direct"},
+            "artifact": None,
+            "plan": None,
+            "repo_name": "Workspace",
+            "duration": duration,
+            "timestamp": int(time.time() * 1000)
+        }
+        if session_id:
+            save_session_turn(session_id, response_payload, repo_path=repo_path)
+        return response_payload
+
+    mem_data = read_disk_memory_files(repo_path)
+    disk_memory_block = format_disk_memory_prompt_block(mem_data)
+    
     if ctx:
         status_steps.append(f"📁 Loaded context for '{ctx.get('name')}' (Branch: {ctx.get('branch')})")
+    status_steps.append(f"💾 Grounded {len(mem_data.get('grounded_files', []))} disk memory and config files from filesystem.")
 
     # 2. Cost-Based Optimizer (CBO) & Execution Plan Selection
     optimal_plan, candidates, stats = optimize_and_select_best_plan(message, ctx)
@@ -587,11 +407,11 @@ async def process_advisor_chat(message: str, repo_path: str = "", session_id: st
     set_dynamic_subagents_roster(planned_subagents)
     
     agent_names_str = ", ".join([a["name"] for a in planned_subagents])
-    status_steps.append(f"🚀 Task Planner: Scaled swarm to {len(planned_subagents)} dynamic specialist slots ({agent_names_str})...")
+    status_steps.append(f"🔍 Analyzing with {agent_names_str}...")
 
-    # 4. Dynamic Parallel Swarm Execution + Qwen 3.8 Oracle
+    # 4. Dynamic Parallel Swarm Execution
     route = route_request(message, has_repo=bool(ctx))
-    update_agent_status("consensus_nodes", "lfm", "running", f"⚡ Hosting {len(planned_subagents)} concurrent GPU swarm slots...")
+    update_agent_status("consensus_nodes", "lfm", "running", f"Analyzing request...")
     
     local_swarm_task = execute_task_aware_swarm(
         planned_subagents, repo_block, message, repo_path=repo_path,
@@ -610,12 +430,12 @@ async def process_advisor_chat(message: str, repo_path: str = "", session_id: st
         swarm_results = await local_swarm_task
         qwen_str = "Bypassed for local private file action."
 
-    update_agent_status("consensus_nodes", "lfm", "online", "Port 8034 (8 continuous slots)")
-    status_steps.append(f"✓ {len(planned_subagents)} specialist sub-agents completed in parallel on GPU.")
+    update_agent_status("consensus_nodes", "lfm", "online", "Port 8034 (Local GPU Swarm)")
+    status_steps.append(f"✓ Analysis complete.")
 
-    # 5. Lead Advisor Synthesis (with Mandatory Clean Architecture Rules)
-    update_agent_status("orchestrator", "gemini", "running", "👑 Lead Advisor synthesizing specialist findings...")
-    status_steps.append("🧠 Synthesizing dynamic specialist findings into authoritative verdict...")
+    # 5. Lead Advisor Synthesis with Multi-Agent Cross-Check Matrix
+    update_agent_status("orchestrator", "advisor", "running", "Synthesizing response...")
+    status_steps.append("🧠 Preparing response...")
 
     findings_blocks = []
     for agent in planned_subagents:
@@ -623,7 +443,7 @@ async def process_advisor_chat(message: str, repo_path: str = "", session_id: st
         findings_blocks.append(f"[{agent['name']} · Skill: {agent['skill']}]\n{swarm_results.get(aid, '')}")
     findings_str = "\n---\n".join(findings_blocks)
 
-    synthesis_prompt = f"""You are the Lead Technical Advisor and AI Coding Architect.
+    synthesis_prompt = f"""You are a senior coding assistant.
 A user asked:
 <REQUEST>
 {message}
@@ -631,26 +451,20 @@ A user asked:
 
 {rules_block}
 
-We deployed a task-aware dynamic swarm of {len(planned_subagents)} specialized sub-agents on our Liquid LFM 2.5 GPU engine alongside Qwen 3.8 Max Oracle:
+{disk_memory_block}
+
+{repo_block}
+
+Analysis findings:
 ---
 {findings_str}
 ---
-[EXTERNAL CONSENSUS PEER: Qwen 3.8 Max Oracle]
-{qwen_str}
----
 
-Your Task:
-1. Synthesize these specialist findings into a cohesive, direct, and authoritative Lead Advisor response.
-2. ENFORCE CLEAN ARCHITECTURE:
-   - Every function MUST be small (≤ 30-35 lines) and single-responsibility.
-   - Classes MUST be small, cohesive, and 1 domain class per file.
-   - Use Dependency Injection (DI) to wire dependencies (inversion of control).
-   - Ensure high refactorability, testability, and clean layer separation.
-3. If this is a CODE REVIEW or AUDIT:
-   - Provide Executive Summary, Critical Security/Regression Risks, Performance/Memory Optimizations, and Concrete Next Steps.
-   - Format the entire review as an authoritative Markdown Artifact document.
-4. If this is an IMPLEMENTATION / DESIGN request:
-   - Provide exact file paths, schemas, and production code grounded in the latest 2026 library versions.
+Your Instructions:
+1. Synthesize the analysis into a clear, direct, and actionable response.
+2. If code changes are needed, provide concrete code with file paths.
+3. Focus on practical solutions over theoretical architecture.
+4. Ground all claims in the actual codebase context provided.
 """
 
     final_advisor_answer = await query_gemini(synthesis_prompt, MODEL_ASSIGNMENTS.get("gemini"))
@@ -659,7 +473,6 @@ Your Task:
 
     # 6. Build and Save Artifact directly to Disk
     artifact = None
-    msg_lower = message.lower()
     is_review = any(k in msg_lower for k in ["review", "audit", "check diff", "inspect code", "quality"])
     is_worktree_task = any(k in msg_lower for k in ["build", "implement", "create worktree", "fix bug", "add feature", "refactor"])
 
@@ -678,19 +491,27 @@ Your Task:
             repo_path=ctx.get("path")
         )
 
-    update_agent_status("orchestrator", "gemini", "idle", "Awaiting user task...")
+    update_agent_status("orchestrator", "advisor", "idle", "Ready")
 
     duration = round(time.time() - start_t, 2)
-    status_steps.append(f"✓ Completed in {duration}s across {len(planned_subagents) + (1 if qwen_task else 0)} parallel AI streams")
+    status_steps.append(f"✓ Completed in {duration}s")
+
+    tier_name = "advisor"
+    thought_label = f"Analyzed · {duration}s"
+    if stats.get("has_doc_keywords"):
+        tier_name = "docs"
+        thought_label = f"Docs & Context Grounded · {duration}s"
 
     response_payload = {
         "prompt": message,
         "answer": final_advisor_answer,
         "status_steps": status_steps,
+        "tier": tier_name,
+        "thought_summary": thought_label,
         "routing": route,
         "artifact": artifact,
         "plan": optimal_plan.to_dict(),
-        "repo_name": ctx.get("name", "Workspace"),
+        "repo_name": ctx.get("name", "Workspace") if ctx else "Workspace",
         "duration": duration,
         "timestamp": int(time.time() * 1000)
     }
